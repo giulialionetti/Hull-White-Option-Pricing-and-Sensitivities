@@ -1,0 +1,24 @@
+# Build output
+bin/
+
+# Object files
+*.o
+*.obj
+
+# CUDA
+*.ptx
+*.cubin
+*.fatbin
+
+# Log files
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
