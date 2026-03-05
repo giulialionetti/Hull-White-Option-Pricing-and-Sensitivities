@@ -30,18 +30,40 @@ __constant__ float device_std_gaussian_shock;
 __constant__ float device_drift_table[N_STEPS];
 __constant__ float device_sensitivity_drift_table[N_STEPS];
 
-void init_device_constants(float fd_sigma = host_sigma){
+enum class CurveType { FLAT, PIECEWISE_LINEAR};
+
+float compute_drift_flat(int i){
+   
+    float host_mean_reversion_factor = expf(-host_a * host_dt);
+    float host_drift_term = host_r0 * (1.0f - host_mean_reversion_factor) / host_a;
+    
+    return host_drift_term;
+}
+
+float compute_drift_piecewise_linear(int i){
+
+    float s = i * host_dt;
+    float s_plus_dt  = s + host_dt;
+
+    float alpha = (s < 5.0f) ? 0.012f  : 0.014f;
+    float beta  = (s < 5.0f) ? 0.0014f : 0.001f;
+    return (alpha + beta * s_plus_dt) * ((1.0f - expf(-host_a * host_dt))/ host_a) -
+     beta * (1.0f - expf(-host_a * host_dt) * (1.0f + host_a * host_dt)) / (host_a * host_a);
+}
+
+void init_device_constants(float fd_sigma = host_sigma, CurveType curve = CurveType::FLAT){
     float host_mean_reversion_factor = expf(-host_a * host_dt);
     float host_std_gaussian_shock = fd_sigma * sqrtf((1.0f- expf(-2.0f*host_a*host_dt))/(2.0f*host_a));
     
-    // to start simple we assume a flat curve which leads to same drift term for each time step
-    // therefore the drift always pulls r back to r0
-    float host_drift_term = host_r0 * (1.0f - host_mean_reversion_factor);
+   
     float host_drift_table[N_STEPS];
     float host_sensitivity_drift_table[N_STEPS];
 
     for(int i=0; i< N_STEPS; i++){
-        host_drift_table[i] = host_drift_term;
+        if(curve == CurveType::FLAT)
+            host_drift_table[i] = compute_drift_flat(i);
+        else
+            host_drift_table[i] = compute_drift_piecewise_linear(i);
 
         float s = i * host_dt;
         float s_plus_dt = i * host_dt + host_dt;

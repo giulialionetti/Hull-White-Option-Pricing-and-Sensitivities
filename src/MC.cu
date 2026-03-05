@@ -29,9 +29,9 @@ void analytical_greeks(float t, float T, float S, float K, float rt){
     LOG_INFO("Delta ZBP         : %.6f", delta_zbp);
 }
 
-void monteCarlo_vega(float T, float S, float K, curandState* d_states){
+void monteCarlo_vega(float T, float S, float K, curandState* d_states, CurveType curve){
    
-     float* d_ZBC   = nullptr;
+    float* d_ZBC   = nullptr;
     float* d_vega  = nullptr;
     cudaMalloc(&d_ZBC,  sizeof(float));
     cudaMalloc(&d_vega, sizeof(float));
@@ -42,6 +42,9 @@ void monteCarlo_vega(float T, float S, float K, curandState* d_states){
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
+
+    const char* label = (curve == CurveType::FLAT) ? "FLAT" : "PIECEWISE";
+    LOG_INFO("=== MC Pricing [%s curve] ===", label);
 
     mc_zbc_vega<<<NB, NTPB>>>(d_ZBC, d_vega, d_states, T, S, K);
 
@@ -74,7 +77,7 @@ void monteCarlo_vega(float T, float S, float K, curandState* d_states){
 
 }
 
-void finitedifferences_mc_vega(float T, float S, float K, curandState* d_states){
+void finitedifferences_mc_vega(float T, float S, float K, curandState* d_states, CurveType curve){
 
     float eps  = 0.001f;
     unsigned long seed = time(NULL);
@@ -89,7 +92,7 @@ void finitedifferences_mc_vega(float T, float S, float K, curandState* d_states)
     // bump up
     cudaMemset(d_ZBC_plus,  0, sizeof(float));
     cudaMemset(d_vega_dummy, 0, sizeof(float));
-    init_device_constants(host_sigma + eps);
+    init_device_constants(host_sigma + eps, curve);
     init_rng<<<NB, NTPB>>>(d_states, seed);
     cudaDeviceSynchronize();
     mc_zbc_vega<<<NB, NTPB>>>(d_ZBC_plus, d_vega_dummy, d_states, T, S, K);
@@ -98,7 +101,7 @@ void finitedifferences_mc_vega(float T, float S, float K, curandState* d_states)
     // bump down — same seed
     cudaMemset(d_ZBC_minus,  0, sizeof(float));
     cudaMemset(d_vega_dummy, 0, sizeof(float));
-    init_device_constants(host_sigma - eps);
+    init_device_constants(host_sigma - eps, curve);
     init_rng<<<NB, NTPB>>>(d_states, seed);
     cudaDeviceSynchronize();
     mc_zbc_vega<<<NB, NTPB>>>(d_ZBC_minus, d_vega_dummy, d_states, T, S, K);
@@ -141,8 +144,13 @@ int main(){
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     cudaDeviceSynchronize();
 
-    monteCarlo_vega(T, S, K, d_states);
-    finitedifferences_mc_vega(T, S, K, d_states);
+    init_device_constants(host_sigma, CurveType::FLAT);
+    monteCarlo_vega(T, S, K, d_states, CurveType::FLAT);
+    finitedifferences_mc_vega(T, S, K, d_states,CurveType::FLAT);
+
+    init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
+    monteCarlo_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    finitedifferences_mc_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
 
     cudaFree(d_states);
     return 0;
