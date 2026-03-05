@@ -1,19 +1,20 @@
 NVCC  = $(shell which nvcc)
 BIN   = bin
-FLAGS = -arch=sm_86 -O3 -I./include
+FLAGS = -arch=sm_70 -O3 -I./include
 
-SRCS  = src/pricing.cu src/MC.cu
+all:  MC
 
-all: pricing
 
-pricing: $(SRCS)
+MC: src/MC.cu
 	@mkdir -p $(BIN)
-	$(NVCC) $(FLAGS) $(SRCS) -o $(BIN)/$@
+	$(NVCC) $(FLAGS) src/MC.cu -o $(BIN)/MC
 
-run: pricing
-	./$(BIN)/pricing
+
+
+run_MC: MC
+	./$(BIN)/MC
 
 clean:
 	rm -rf $(BIN)
 
-.PHONY: all run clean
+.PHONY: all run_MC clean
