@@ -1,4 +1,5 @@
 #include "mc.cuh"
+#include "swaptions.cuh"
 #include "logger.h"
 
 
@@ -177,6 +178,82 @@ void compute_market_data(float* h_P, float* h_f, curandState* d_states){
 
     cudaFree(d_P_sum);
 }
+void monteCarlo_swaption(float T_expiry, curandState* d_states,
+                         float* d_P_market, float* d_f_market,
+                         float analytical_price){
+
+    float* d_swaption = nullptr;
+    float* d_vega     = nullptr;
+    cudaMalloc(&d_swaption, sizeof(float));
+    cudaMalloc(&d_vega,     sizeof(float));
+    cudaMemset(d_swaption, 0, sizeof(float));
+    cudaMemset(d_vega,     0, sizeof(float));
+
+    init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
+    mc_swaption<<<NB, NTPB>>>(d_swaption, d_vega, d_states,
+                               T_expiry, d_P_market, d_f_market);
+    cudaDeviceSynchronize();
+
+    float h_swaption, h_vega;
+    cudaMemcpy(&h_swaption, d_swaption, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_vega,     d_vega,     sizeof(float), cudaMemcpyDeviceToHost);
+    h_swaption /= N_PATHS;
+    h_vega     /= N_PATHS;
+
+    LOG_INFO("=== Swaption MC vs Analytical ===");
+    LOG_INFO("MC swaption      : %.6f  |  Analytical: %.6f  |  Error: %.2e",
+             h_swaption, analytical_price, fabsf(h_swaption - analytical_price));
+    LOG_INFO("MC pathwise vega : %.6f", h_vega);
+
+    cudaFree(d_swaption);
+    cudaFree(d_vega);
+}
+
+void finitedifferences_mc_swaption_vega(float T_expiry, curandState* d_states,
+                                         float* d_P_market, float* d_f_market){
+    float eps        = 0.001f;
+    unsigned long seed = time(NULL);
+
+    float* d_swaption_plus  = nullptr;
+    float* d_swaption_minus = nullptr;
+    float* d_vega_dummy     = nullptr;
+    cudaMalloc(&d_swaption_plus,  sizeof(float));
+    cudaMalloc(&d_swaption_minus, sizeof(float));
+    cudaMalloc(&d_vega_dummy,     sizeof(float));
+
+    // bump up
+    cudaMemset(d_swaption_plus, 0, sizeof(float));
+    cudaMemset(d_vega_dummy,    0, sizeof(float));
+    init_device_constants(host_sigma + eps, CurveType::PIECEWISE_LINEAR);
+    init_rng<<<NB, NTPB>>>(d_states, seed);
+    cudaDeviceSynchronize();
+    mc_swaption<<<NB, NTPB>>>(d_swaption_plus, d_vega_dummy, d_states,
+                               T_expiry, d_P_market, d_f_market);
+    cudaDeviceSynchronize();
+
+    // bump down — same seed
+    cudaMemset(d_swaption_minus, 0, sizeof(float));
+    cudaMemset(d_vega_dummy,     0, sizeof(float));
+    init_device_constants(host_sigma - eps, CurveType::PIECEWISE_LINEAR);
+    init_rng<<<NB, NTPB>>>(d_states, seed);
+    cudaDeviceSynchronize();
+    mc_swaption<<<NB, NTPB>>>(d_swaption_minus, d_vega_dummy, d_states,
+                               T_expiry, d_P_market, d_f_market);
+    cudaDeviceSynchronize();
+
+    float h_plus, h_minus;
+    cudaMemcpy(&h_plus,  d_swaption_plus,  sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_minus, d_swaption_minus, sizeof(float), cudaMemcpyDeviceToHost);
+    h_plus  /= N_PATHS;
+    h_minus /= N_PATHS;
+
+    float vega_fd = (h_plus - h_minus) / (2.0f * eps);
+    LOG_INFO("FD vega          : %.6f", vega_fd);
+
+    cudaFree(d_swaption_plus);
+    cudaFree(d_swaption_minus);
+    cudaFree(d_vega_dummy);
+}
 int main(){
     Logger& log = Logger::instance();
     log.open_file("hw_output.log");
@@ -225,6 +302,37 @@ init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
 monteCarlo_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR, d_P_market, d_f_market, h_P, h_f);
 finitedifferences_mc_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR, 
                            d_P_market, d_f_market, h_P, h_f);
+
+float tenor_dates[] = {2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    int   n_tenors      = 5;
+
+    float K_swap = par_swap_rate(1.0f, tenor_dates, n_tenors, h_P, MAT_SPACING, N_MAT);
+
+    float c[5];
+    for(int i = 0; i < n_tenors - 1; i++) c[i] = K_swap;
+    c[n_tenors - 1] = 1.0f + K_swap;
+    float ps_analytical = analytical_swaption(1.0f, tenor_dates, n_tenors, c,
+                                           h_P, h_f,
+                                           host_a, host_sigma, host_r0,
+                                           MAT_SPACING, N_MAT);
+
+    LOG_INFO("=== Swaption Analytical ===");
+    LOG_INFO("Par swap rate K  : %.6f", K_swap);
+    LOG_INFO("Analytical price : %.6f", ps_analytical);
+
+    init_swaption_constants(tenor_dates, c, n_tenors);
+
+    init_rng<<<NB, NTPB>>>(d_states, time(NULL));
+    cudaDeviceSynchronize();
+monteCarlo_swaption(1.0f, d_states, d_P_market, d_f_market, ps_analytical);
+
+init_rng<<<NB, NTPB>>>(d_states, time(NULL));
+cudaDeviceSynchronize();
+float ps_vega_analytical = analytical_swaption_vega(1.0f, tenor_dates, n_tenors, c,
+                                                     h_P, h_f, host_a, host_sigma,
+                                                     host_r0, MAT_SPACING, N_MAT);
+LOG_INFO("Analytical Swaption Vega  : %.6f", ps_vega_analytical);
+finitedifferences_mc_swaption_vega(1.0f, d_states, d_P_market, d_f_market);
 
 cudaFree(d_states);
     cudaFree(d_P_market);

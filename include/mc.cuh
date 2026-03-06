@@ -18,6 +18,7 @@
 #define N_MAT 100
 #define MAT_SPACING 0.1f
 #define SAVE_STRIDE 10
+#define MAX_TENORS 10
 
 const float host_a = 1.0f;
 const float host_sigma = 0.1f;
@@ -32,6 +33,10 @@ __constant__ float device_mean_reversion_factor;
 __constant__ float device_std_gaussian_shock;
 __constant__ float device_drift_table[N_STEPS];
 __constant__ float device_sensitivity_drift_table[N_STEPS];
+
+__constant__ float device_tenor_dates[MAX_TENORS];
+__constant__ float device_c[MAX_TENORS];
+__constant__ int device_n_tenors;
 
 enum class CurveType { FLAT, PIECEWISE_LINEAR};
 
@@ -87,6 +92,14 @@ void init_device_constants(float fd_sigma = host_sigma, CurveType curve = CurveT
                    N_STEPS * sizeof(float));
 
 }
+
+
+void init_swaption_constants(const float* tenor_dates, const float* c, int n_tenors){
+    cudaMemcpyToSymbol(device_tenor_dates, tenor_dates, n_tenors * sizeof(float));
+    cudaMemcpyToSymbol(device_c,           c,           n_tenors * sizeof(float));
+    cudaMemcpyToSymbol(device_n_tenors,    &n_tenors,   sizeof(int));
+}
+
 
 __global__ void init_rng(curandState* states, unsigned long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -211,5 +224,74 @@ __global__ void mc_zbc_vega(float* ZBC_estimator, float* vega_estimator,
             atomicAdd(vega_estimator, shared_vega[0]);
         }
 }
+__global__ void mc_swaption(float* swaption_estimator, float* vega_estimator,
+                             curandState* states,
+                             float T, const float* d_P_market, const float* d_f_market){
+
+    int path_id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    __shared__ float shared_swaption[NTPB];
+    __shared__ float shared_vega[NTPB];
+    float thread_swaption = 0.0f;
+    float thread_vega     = 0.0f;
+
+    if(path_id < N_PATHS){
+        curandState local_state = states[path_id];
+
+        float r_step_i                 = device_r0;
+        float discount_factor_integral = 0.0f;
+        float drdsigma_step_i          = 0.0f;
+        float drdsigma_integral        = 0.0f;
+
+        int n_steps_T = (int)(T / device_dt);
+        for(int i = 0; i < n_steps_T; i++){
+            float G = curand_normal(&local_state);
+            evolve_short_rate(r_step_i, discount_factor_integral,
+                              device_drift_table[i], G);
+            evolve_short_rate_derivative(drdsigma_step_i, drdsigma_integral,
+                                        device_sensitivity_drift_table[i], G);
+        }
+
+        MarketCurve curve{device_a, device_sigma, d_P_market, d_f_market,
+                          MAT_SPACING, N_MAT};
+
+        float swap_value      = 0.0f;
+        float dswap_dsigma    = 0.0f;
+        for(int i = 0; i < device_n_tenors; i++){
+            float P_T_Ti       = curve.P(T, device_tenor_dates[i], r_step_i);
+            float B_T_Ti       = BtT(T, device_tenor_dates[i], device_a);
+            swap_value        += device_c[i] * P_T_Ti;
+            dswap_dsigma      += device_c[i] * (-B_T_Ti) * P_T_Ti * drdsigma_step_i;
+        }
+
+        float discount_factor  = expf(-discount_factor_integral);
+        float in_the_money     = (swap_value > 1.0f) ? 1.0f : 0.0f;
+
+        thread_swaption = discount_factor * fmaxf(swap_value - 1.0f, 0.0f);
+        thread_vega     = discount_factor * dswap_dsigma * in_the_money
+                        - drdsigma_integral * discount_factor
+                          * fmaxf(swap_value - 1.0f, 0.0f);
+
+        states[path_id] = local_state;
+    }
+
+    shared_swaption[threadIdx.x] = thread_swaption;
+    shared_vega[threadIdx.x]     = thread_vega;
+    __syncthreads();
+
+    for(int i = NTPB/2; i > 0; i >>= 1){
+        if(threadIdx.x < i){
+            shared_swaption[threadIdx.x] += shared_swaption[threadIdx.x + i];
+            shared_vega[threadIdx.x]     += shared_vega[threadIdx.x + i];
+        }
+        __syncthreads();
+    }
+
+    if(threadIdx.x == 0){
+        atomicAdd(swaption_estimator, shared_swaption[0]);
+        atomicAdd(vega_estimator,     shared_vega[0]);
+    }
+}
+
 
 #endif // MC_CUH
