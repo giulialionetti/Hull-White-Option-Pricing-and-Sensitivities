@@ -11,132 +11,203 @@ __host__ __device__ inline float BtT(float t, float T_maturity, float a){
     return (1.0f - expf(-a * (T_maturity - t))) / a;
 }
 
-__host__ __device__ inline float AtT(float t, float T_maturity, float a, float sigma, float r0){
-    float B_t_T      = BtT(t, T_maturity, a);
-    float fwd_discount = expf(-r0 * (T_maturity - t));
-    float convexity_adj = -(sigma * sigma) * (1.0f - expf(-2.0f * a * t)) / (4.0f * a) * B_t_T * B_t_T;
-    return fwd_discount * expf(B_t_T * r0 + convexity_adj);
-}
-
-__host__ __device__ inline float PtT(float t, float T_maturity, float rt, float a, float sigma, float r0){
-    float A = AtT(t, T_maturity, a, sigma, r0);
-    float B = BtT(t, T_maturity, a);
-    return A * expf(-B * rt);
-}
-
-__host__ __device__ inline float ZBC(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float B_T_S  = BtT(T_maturity, S, a);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    return P_t_S * normcdff(h) - K * P_t_T * normcdff(h - sigma_p);
-}
-
-__host__ __device__ inline float ZBP(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float B_T_S  = BtT(T_maturity, S, a);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    return K * P_t_T * normcdff(-h + sigma_p) - P_t_S * normcdff(-h);
-}
-
-__host__ __device__ inline float vega_ZBC(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float B_T_S  = BtT(T_maturity, S, a);
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    float phi_h  = expf(-h * h * 0.5f) / sqrtf(2.0f * 3.14159265f);
-    return P_t_S * phi_h * (sigma_p / sigma);
-}
-
-__host__ __device__ inline float vega_ZBP(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float B_T_S  = BtT(T_maturity, S, a);
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    float phi_h  = expf(-h * h * 0.5f) / sqrtf(2.0f * 3.14159265f);
-    return P_t_S * phi_h * (sigma_p / sigma);
-}
-
-__host__ __device__ inline float delta_ZBC(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float B_t_S  = BtT(t, S, a);
-    float B_t_T  = BtT(t, T_maturity, a);
-    float B_T_S  = BtT(T_maturity, S, a);
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    return -(B_t_S * P_t_S * normcdff(h)) + (K * B_t_T * P_t_T * normcdff(h - sigma_p));
-}
-
-__host__ __device__ inline float delta_ZBP(float t, float T_maturity, float S, float K, float rt, float a, float sigma, float r0){
-    float B_t_S  = BtT(t, S, a);
-    float B_t_T  = BtT(t, T_maturity, a);
-    float B_T_S  = BtT(T_maturity, S, a);
-    float P_t_S  = PtT(t, S, rt, a, sigma, r0);
-    float P_t_T  = PtT(t, T_maturity, rt, a, sigma, r0);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    return -(K * B_t_T * P_t_T * normcdff(-h + sigma_p)) + (B_t_S * P_t_S * normcdff(-h));
-}
-
-__host__ __device__ inline float interpolate(const float* data, float T, float spacing, int n_mat){
-    int idx = (int)(T / spacing);
+__host__ __device__ inline float interpolate(const float* data, float T_maturity,
+                                              float mat_spacing, int n_mat){
+    int idx = (int)(T_maturity / mat_spacing);
     if(idx >= n_mat - 1) return data[n_mat - 1];
-    float t0    = idx * spacing;
-    float alpha = (T - t0) / spacing;
+    float t0    = idx * mat_spacing;
+    float alpha = (T_maturity - t0) / mat_spacing;
     return data[idx] * (1.0f - alpha) + data[idx + 1] * alpha;
 }
 
-__host__ __device__ inline float AtT_market(float t, float T_maturity, float a, float sigma,
-                                             const float* P_market, const float* f_market,
-                                             float mat_spacing, int n_mat){
-    float B     = BtT(t, T_maturity, a);
-    float P0T   = interpolate(P_market, T_maturity, mat_spacing, n_mat);
-    float P0t   = (t == 0.0f) ? 1.0f : interpolate(P_market, t, mat_spacing, n_mat);
-    float f0t   = interpolate(f_market, t, mat_spacing, n_mat);
-    float ratio = P0T / P0t;
-    float term2 = B * f0t;
-    float term3 = (sigma * sigma / (4.0f * a)) * (1.0f - expf(-2.0f * a * t)) * B * B;
-    return ratio * expf(term2 - term3);
+// ============================================================================
+// Curve policies
+// Each policy exposes a single method: P(t, T_maturity, rt) -> float
+// ============================================================================
+
+// Flat curve: uses analytical A(t,T) with constant r0
+// P(t,T) = A(t,T) * exp(-B(t,T) * r(t))
+// A(t,T) derived under flat curve assumption f(0,T) = r0
+struct FlatCurve {
+    float a, sigma, r0;
+
+    __host__ __device__ float P(float t, float T_maturity, float rt) const {
+        float B_t_T             = BtT(t, T_maturity, a);
+        float forward_discount  = expf(-r0 * (T_maturity - t));
+        float convexity_adj     = -(sigma * sigma) * (1.0f - expf(-2.0f * a * t))
+                                  / (4.0f * a) * B_t_T * B_t_T;
+        float A_t_T             = forward_discount * expf(B_t_T * r0 + convexity_adj);
+        return A_t_T * expf(-B_t_T * rt);
+    }
+};
+
+// Market curve: uses real P(0,T) and f(0,T) arrays with linear interpolation
+// Brigo-Mercurio eq. 3.39
+struct MarketCurve {
+    float a, sigma;
+    const float* P_market;
+    const float* f_market;
+    float mat_spacing;
+    int   n_mat;
+
+    __host__ __device__ float P(float t, float T_maturity, float rt) const {
+        float B_t_T              = BtT(t, T_maturity, a);
+        float P_zero_T_maturity  = interpolate(P_market, T_maturity, mat_spacing, n_mat);
+        float P_zero_t           = (t == 0.0f) ? 1.0f
+                                               : interpolate(P_market, t, mat_spacing, n_mat);
+        float f_zero_t           = interpolate(f_market, t, mat_spacing, n_mat);
+        float forward_discount   = P_zero_T_maturity / P_zero_t;
+        float drift_adjustment   = B_t_T * f_zero_t;
+        float convexity_adj      = (sigma * sigma / (4.0f * a))
+                                   * (1.0f - expf(-2.0f * a * t)) * B_t_T * B_t_T;
+        float A_t_T              = forward_discount * expf(drift_adjustment - convexity_adj);
+        return A_t_T * expf(-B_t_T * rt);
+    }
+};
+
+template<typename Curve>
+__host__ __device__ inline float ZBC_impl(float t, float T_maturity, float S, float K,
+                                           float rt, float a, float sigma,
+                                           const Curve& curve){
+    float bond_price_t_S  = curve.P(t, S, rt);
+    float bond_price_t_T  = curve.P(t, T_maturity, rt);
+    float B_T_maturity_S  = BtT(T_maturity, S, a);
+    float sigma_p         = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t)))
+                                          / (2.0f * a)) * B_T_maturity_S;
+    float h               = (1.0f / sigma_p) * logf(bond_price_t_S
+                             / (bond_price_t_T * K)) + sigma_p / 2.0f;
+    return bond_price_t_S * normcdff(h) - K * bond_price_t_T * normcdff(h - sigma_p);
 }
 
-__host__ __device__ inline float PtT_market(float t, float T_maturity, float rt, float a, float sigma,
-                                             const float* P_market, const float* f_market,
-                                             float mat_spacing, int n_mat){
-    float A = AtT_market(t, T_maturity, a, sigma, P_market, f_market, mat_spacing, n_mat);
-    float B = BtT(t, T_maturity, a);
-    return A * expf(-B * rt);
+template<typename Curve>
+__host__ __device__ inline float ZBP_impl(float t, float T_maturity, float S, float K,
+                                           float rt, float a, float sigma,
+                                           const Curve& curve){
+    float bond_price_t_S  = curve.P(t, S, rt);
+    float bond_price_t_T  = curve.P(t, T_maturity, rt);
+    float B_T_maturity_S  = BtT(T_maturity, S, a);
+    float sigma_p         = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t)))
+                                          / (2.0f * a)) * B_T_maturity_S;
+    float h               = (1.0f / sigma_p) * logf(bond_price_t_S
+                             / (bond_price_t_T * K)) + sigma_p / 2.0f;
+    return K * bond_price_t_T * normcdff(-h + sigma_p)
+           - bond_price_t_S * normcdff(-h);
 }
 
-__host__ __device__ inline float ZBC_market(float t, float T_maturity, float S, float K, float rt,
+template<typename Curve>
+__host__ __device__ inline float vega_ZBC_impl(float t, float T_maturity, float S, float K,
+                                                float rt, float a, float sigma,
+                                                const Curve& curve){
+    float bond_price_t_S  = curve.P(t, S, rt);
+    float bond_price_t_T  = curve.P(t, T_maturity, rt);
+    float B_T_maturity_S  = BtT(T_maturity, S, a);
+    float sigma_p         = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t)))
+                                          / (2.0f * a)) * B_T_maturity_S;
+    float h               = (1.0f / sigma_p) * logf(bond_price_t_S
+                             / (bond_price_t_T * K)) + sigma_p / 2.0f;
+    float phi_h           = expf(-h * h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+    return bond_price_t_S * phi_h * (sigma_p / sigma);
+}
+
+template<typename Curve>
+__host__ __device__ inline float vega_ZBP_impl(float t, float T_maturity, float S, float K,
+                                                float rt, float a, float sigma,
+                                                const Curve& curve){
+    // vega ZBP = vega ZBC by put-call parity
+    return vega_ZBC_impl(t, T_maturity, S, K, rt, a, sigma, curve);
+}
+
+template<typename Curve>
+__host__ __device__ inline float delta_ZBC_impl(float t, float T_maturity, float S, float K,
+                                                 float rt, float a, float sigma,
+                                                 const Curve& curve){
+    float B_t_S           = BtT(t, S, a);
+    float B_t_T           = BtT(t, T_maturity, a);
+    float bond_price_t_S  = curve.P(t, S, rt);
+    float bond_price_t_T  = curve.P(t, T_maturity, rt);
+    float B_T_maturity_S  = BtT(T_maturity, S, a);
+    float sigma_p         = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t)))
+                                          / (2.0f * a)) * B_T_maturity_S;
+    float h               = (1.0f / sigma_p) * logf(bond_price_t_S
+                             / (bond_price_t_T * K)) + sigma_p / 2.0f;
+    return -(B_t_S * bond_price_t_S * normcdff(h))
+           + (K * B_t_T * bond_price_t_T * normcdff(h - sigma_p));
+}
+
+template<typename Curve>
+__host__ __device__ inline float delta_ZBP_impl(float t, float T_maturity, float S, float K,
+                                                 float rt, float a, float sigma,
+                                                 const Curve& curve){
+    float B_t_S           = BtT(t, S, a);
+    float B_t_T           = BtT(t, T_maturity, a);
+    float bond_price_t_S  = curve.P(t, S, rt);
+    float bond_price_t_T  = curve.P(t, T_maturity, rt);
+    float B_T_maturity_S  = BtT(T_maturity, S, a);
+    float sigma_p         = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t)))
+                                          / (2.0f * a)) * B_T_maturity_S;
+    float h               = (1.0f / sigma_p) * logf(bond_price_t_S
+                             / (bond_price_t_T * K)) + sigma_p / 2.0f;
+    return -(K * B_t_T * bond_price_t_T * normcdff(-h + sigma_p))
+           + (B_t_S * bond_price_t_S * normcdff(-h));
+}
+
+// wrappers for backwards compatibility in 
+
+__host__ __device__ inline float ZBC(float t, float T_maturity, float S, float K,
+                                      float rt, float a, float sigma, float r0){
+    return ZBC_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float ZBP(float t, float T_maturity, float S, float K,
+                                      float rt, float a, float sigma, float r0){
+    return ZBP_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float vega_ZBC(float t, float T_maturity, float S, float K,
+                                           float rt, float a, float sigma, float r0){
+    return vega_ZBC_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float vega_ZBP(float t, float T_maturity, float S, float K,
+                                           float rt, float a, float sigma, float r0){
+    return vega_ZBP_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float delta_ZBC(float t, float T_maturity, float S, float K,
+                                            float rt, float a, float sigma, float r0){
+    return delta_ZBC_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float delta_ZBP(float t, float T_maturity, float S, float K,
+                                            float rt, float a, float sigma, float r0){
+    return delta_ZBP_impl(t, T_maturity, S, K, rt, a, sigma, FlatCurve{a, sigma, r0});
+}
+
+__host__ __device__ inline float ZBC_market(float t, float T_maturity, float S, float K,
+                                             float rt, float a, float sigma,
+                                             const float* P_market, const float* f_market,
+                                             float mat_spacing, int n_mat){
+    return ZBC_impl(t, T_maturity, S, K, rt, a, sigma,
+                    MarketCurve{a, sigma, P_market, f_market, mat_spacing, n_mat});
+}
+
+__host__ __device__ inline float vega_ZBC_market(float t, float T_maturity, float S, float K,
+                                                  float rt, float a, float sigma,
+                                                  const float* P_market, const float* f_market,
+                                                  float mat_spacing, int n_mat){
+    return vega_ZBC_impl(t, T_maturity, S, K, rt, a, sigma,
+                         MarketCurve{a, sigma, P_market, f_market, mat_spacing, n_mat});
+}
+__host__ __device__ inline float PtT(float t, float T_maturity, float rt,
+                                      float a, float sigma, float r0){
+    return FlatCurve{a, sigma, r0}.P(t, T_maturity, rt);
+}
+
+__host__ __device__ inline float PtT_market(float t, float T_maturity, float rt,
                                              float a, float sigma,
                                              const float* P_market, const float* f_market,
                                              float mat_spacing, int n_mat){
-    float P_t_S  = PtT_market(t, S, rt, a, sigma, P_market, f_market, mat_spacing, n_mat);
-    float P_t_T  = PtT_market(t, T_maturity, rt, a, sigma, P_market, f_market, mat_spacing, n_mat);
-    float B_T_S  = BtT(T_maturity, S, a);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    return P_t_S * normcdff(h) - K * P_t_T * normcdff(h - sigma_p);
+    return MarketCurve{a, sigma, P_market, f_market, mat_spacing, n_mat}.P(t, T_maturity, rt);
 }
-
-__host__ __device__ inline float vega_ZBC_market(float t, float T_maturity, float S, float K, float rt,
-                                                  float a, float sigma,
-                                                  const float* P_market, const float* f_market,
-                                                  float mat_spacing, int n_mat){
-    float B_T_S  = BtT(T_maturity, S, a);
-    float P_t_S  = PtT_market(t, S, rt, a, sigma, P_market, f_market, mat_spacing, n_mat);
-    float P_t_T  = PtT_market(t, T_maturity, rt, a, sigma, P_market, f_market, mat_spacing, n_mat);
-    float sigma_p = sigma * sqrtf((1.0f - expf(-2.0f * a * (T_maturity - t))) / (2.0f * a)) * B_T_S;
-    float h      = (1.0f / sigma_p) * logf(P_t_S / (P_t_T * K)) + sigma_p / 2.0f;
-    float phi_h  = expf(-h * h * 0.5f) / sqrtf(2.0f * 3.14159265f);
-    return P_t_S * phi_h * (sigma_p / sigma);
-}
-
 
 #endif // HW_KERNELS_CUH
