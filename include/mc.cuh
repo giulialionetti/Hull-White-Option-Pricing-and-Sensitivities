@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "hw_kernels.cuh"
+#include "calibration.cuh"
 
 #define N_PATHS (1024 * 1024)
 #define NTPB 1024
@@ -91,6 +92,33 @@ void init_device_constants(float fd_sigma = host_sigma, CurveType curve = CurveT
     cudaMemcpyToSymbol(device_sensitivity_drift_table, host_sensitivity_drift_table, 
                    N_STEPS * sizeof(float));
 
+}
+
+void init_device_constants_calibrated(const float* h_f){
+    float host_mean_reversion_factor = expf(-host_a * host_dt);
+    float host_std_gaussian_shock    = host_sigma * sqrtf((1.0f - expf(-2.0f * host_a * host_dt))
+                                                          / (2.0f * host_a));
+    float host_drift_table[N_STEPS];
+    float host_sensitivity_drift_table[N_STEPS];
+
+    compute_calibrated_drift_table(host_drift_table, h_f, host_a, host_sigma,
+                                   host_dt, MAT_SPACING, N_STEPS, N_MAT);
+
+    for(int i = 0; i < N_STEPS; i++){
+        float s_plus_dt = (i + 1) * host_dt;
+        host_sensitivity_drift_table[i] = (2.0f * host_sigma * expf(-host_a * s_plus_dt) *
+                                          (coshf(host_a * s_plus_dt) - coshf(host_a * (i * host_dt))))
+                                          / (host_a * host_a);
+    }
+
+    cudaMemcpyToSymbol(device_a,                      &host_a,                      sizeof(float));
+    cudaMemcpyToSymbol(device_sigma,                  &host_sigma,                  sizeof(float));
+    cudaMemcpyToSymbol(device_r0,                     &host_r0,                     sizeof(float));
+    cudaMemcpyToSymbol(device_dt,                     &host_dt,                     sizeof(float));
+    cudaMemcpyToSymbol(device_mean_reversion_factor,  &host_mean_reversion_factor,  sizeof(float));
+    cudaMemcpyToSymbol(device_std_gaussian_shock,     &host_std_gaussian_shock,     sizeof(float));
+    cudaMemcpyToSymbol(device_drift_table,             host_drift_table,             N_STEPS * sizeof(float));
+    cudaMemcpyToSymbol(device_sensitivity_drift_table, host_sensitivity_drift_table, N_STEPS * sizeof(float));
 }
 
 
@@ -198,8 +226,13 @@ __global__ void mc_zbc_vega(float* ZBC_estimator, float* vega_estimator,
                            P_market, f_market, MAT_SPACING, N_MAT);
 
             float discount_factor = expf(-discount_factor_integral);
-            float dPricedsigma = -BtT(T_maturity, S, device_a) *
-                                  bond_price_at_maturity * drdsigma_step_i;
+            float B_val = BtT(T_maturity, S, device_a);
+            float convexity_dsigma = (device_sigma / (2.0f * device_a))
+                       * (1.0f - expf(-2.0f * device_a * T_maturity))
+                       * B_val * B_val;
+
+            float dPricedsigma = -bond_price_at_maturity
+                   * (B_val * drdsigma_step_i + convexity_dsigma);
 
             thread_zbc = discount_factor * fmaxf(bond_price_at_maturity - K, 0.0f);
             thread_vega = discount_factor * dPricedsigma * (bond_price_at_maturity > K ? 1.0f : 0.0f)
