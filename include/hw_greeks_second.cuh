@@ -5,6 +5,7 @@
 #include "hw_pricing.cuh"
 #include "hw_greeks_first.cuh"
 
+
 // Section 1: Volga — ∂²/∂σ²
 //
 // Three channels contribute from differentiating the vega expression:

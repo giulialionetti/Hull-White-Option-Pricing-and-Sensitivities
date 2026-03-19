@@ -11,6 +11,7 @@
 #include "hw_primitives.cuh"
 #include "hw_pricing.cuh"
 #include "hw_greeks_first.cuh"
+#include "hw_greeks_second.cuh"
 #include "calibration.cuh"
 
 #define N_PATHS (1024 * 1024)
@@ -257,16 +258,22 @@ __global__ void mc_zbc_vega(float* ZBC_estimator, float* vega_estimator,
             atomicAdd(vega_estimator, shared_vega[0]);
         }
 }
-__global__ void mc_payer_swaption(float* swaption_estimator, float* vega_estimator,
-                             curandState* states,
-                             float T, const float* d_P_market, const float* d_f_market){
+__global__ void mc_payer_swaption_volga(float* swaption_estimator,
+                                         float* vega_estimator,
+                                         float* volga_estimator,
+                                         curandState* states,
+                                         float T, const float* d_P_market,
+                                         const float* d_f_market){
 
     int path_id = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float shared_swaption[NTPB];
     __shared__ float shared_vega[NTPB];
+    __shared__ float shared_volga[NTPB];
+
     float thread_swaption = 0.0f;
     float thread_vega     = 0.0f;
+    float thread_volga    = 0.0f;
 
     if(path_id < N_PATHS){
         curandState local_state = states[path_id];
@@ -288,34 +295,54 @@ __global__ void mc_payer_swaption(float* swaption_estimator, float* vega_estimat
         MarketCurve curve{device_a, device_sigma, d_P_market, d_f_market,
                           MAT_SPACING, N_MAT};
 
-        float swap_value      = 0.0f;
-        float dswap_dsigma    = 0.0f;
-        for(int i = 0; i < device_n_tenors; i++){
-            float P_T_Ti       = curve.P(T, device_tenor_dates[i], r_step_i);
-            float B_T_Ti       = BtT(T, device_tenor_dates[i], device_a);
-            swap_value        += device_c[i] * P_T_Ti;
-            dswap_dsigma      += device_c[i] * (-B_T_Ti) * P_T_Ti * drdsigma_step_i;
-        }
+        float srvn_T = (1.0f - expf(-2.0f * device_a * T)) / (2.0f * device_a);
 
-        float discount_factor  = expf(-discount_factor_integral);
-        float in_the_money = (swap_value < 1.0f) ? 1.0f : 0.0f;
+        float swap_value     = 0.0f;
+        float dswap_dsigma   = 0.0f;
+        float d2swap_dsigma2 = 0.0f;
 
-        thread_swaption = discount_factor * fmaxf(1.0f - swap_value, 0.0f);
-        thread_vega     = discount_factor * (-dswap_dsigma) * in_the_money
-                - drdsigma_integral * discount_factor
-                  * fmaxf(1.0f - swap_value, 0.0f);
+      for(int i = 0; i < device_n_tenors; i++){
+    float P_T_Ti = curve.P(T, device_tenor_dates[i], r_step_i);
+    float B_T_Ti = BtT(T, device_tenor_dates[i], device_a);
+
+    swap_value     += device_c[i] * P_T_Ti;
+    dswap_dsigma   += device_c[i] * (-B_T_Ti) * P_T_Ti * drdsigma_step_i;
+    d2swap_dsigma2 += device_c[i] * B_T_Ti * B_T_Ti * P_T_Ti
+                    * drdsigma_step_i * drdsigma_step_i;
+}
+
+        float discount_factor = expf(-discount_factor_integral);
+        float payoff          = fmaxf(1.0f - swap_value, 0.0f);
+        float in_the_money    = (swap_value < 1.0f) ? 1.0f : 0.0f;
+
+        thread_swaption = discount_factor * payoff;
+        thread_vega =   discount_factor * (-dswap_dsigma) * in_the_money
+                      - drdsigma_integral * discount_factor * payoff;
+
+        // volga:
+        // (1)  ∂²D/∂σ² · (1-V)       =  drdsigma_integral² · D · payoff
+        // (2)  2·(∂D/∂σ)·(-∂V/∂σ)    = +2·drdsigma_integral · D · dswap_dsigma · itm
+        //      sign flips vs receiver because ∂(1-V)/∂σ = -∂V/∂σ
+        // (3)  D · (-∂²V/∂σ²)         = -D · d2swap_dsigma2 · itm
+        //      sign flips vs receiver
+        thread_volga =
+              drdsigma_integral * drdsigma_integral * discount_factor * payoff
+            + 2.0f * drdsigma_integral * discount_factor * dswap_dsigma * in_the_money
+            - discount_factor * d2swap_dsigma2 * in_the_money;
 
         states[path_id] = local_state;
     }
 
     shared_swaption[threadIdx.x] = thread_swaption;
     shared_vega[threadIdx.x]     = thread_vega;
+    shared_volga[threadIdx.x]    = thread_volga;
     __syncthreads();
 
     for(int i = NTPB/2; i > 0; i >>= 1){
         if(threadIdx.x < i){
             shared_swaption[threadIdx.x] += shared_swaption[threadIdx.x + i];
             shared_vega[threadIdx.x]     += shared_vega[threadIdx.x + i];
+            shared_volga[threadIdx.x]    += shared_volga[threadIdx.x + i];
         }
         __syncthreads();
     }
@@ -323,6 +350,7 @@ __global__ void mc_payer_swaption(float* swaption_estimator, float* vega_estimat
     if(threadIdx.x == 0){
         atomicAdd(swaption_estimator, shared_swaption[0]);
         atomicAdd(vega_estimator,     shared_vega[0]);
+        atomicAdd(volga_estimator,    shared_volga[0]);
     }
 }
 

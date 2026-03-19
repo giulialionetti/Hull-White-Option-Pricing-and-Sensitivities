@@ -192,71 +192,76 @@ void compute_market_data(float* h_P, float* h_f, curandState* d_states){
 
 void monteCarlo_swaption(float T_expiry, curandState* d_states,
                          float* d_P_market, float* d_f_market,
-                         float analytical_price){
-    
+                         float analytical_price, float analytical_vega, float analytical_volga){
+
     float* d_swaption = nullptr;
     float* d_vega     = nullptr;
+    float* d_volga    = nullptr;
     cudaMalloc(&d_swaption, sizeof(float));
     cudaMalloc(&d_vega,     sizeof(float));
+    cudaMalloc(&d_volga,    sizeof(float));
     cudaMemset(d_swaption, 0, sizeof(float));
     cudaMemset(d_vega,     0, sizeof(float));
+    cudaMemset(d_volga,    0, sizeof(float));
 
     init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
-    mc_payer_swaption<<<NB, NTPB>>>(d_swaption, d_vega, d_states,
-                               T_expiry, d_P_market, d_f_market);
+    mc_payer_swaption_volga<<<NB, NTPB>>>(d_swaption, d_vega, d_volga, d_states,
+                                           T_expiry, d_P_market, d_f_market);
     cudaDeviceSynchronize();
 
-    float h_swaption, h_vega;
+    float h_swaption, h_vega, h_volga;
     cudaMemcpy(&h_swaption, d_swaption, sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_vega,     d_vega,     sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_volga,    d_volga,    sizeof(float), cudaMemcpyDeviceToHost);
     h_swaption /= N_PATHS;
     h_vega     /= N_PATHS;
+    h_volga    /= N_PATHS;
 
     LOG_INFO("=== Swaption MC vs Analytical ===");
     LOG_INFO("MC swaption      : %.6f  |  Analytical: %.6f  |  Error: %.2e",
              h_swaption, analytical_price, fabsf(h_swaption - analytical_price));
-    LOG_INFO("MC pathwise vega : %.6f", h_vega);
+    LOG_INFO("MC pathwise vega : %.6f  |  Analytical: %.6f  |  Error: %.2e",
+             h_vega, analytical_vega, fabsf(h_vega - analytical_vega));
+    LOG_INFO("MC pathwise volga: %.6f  |  Analytical: %.6f  |  Error: %.2e",
+             h_volga,    analytical_volga,  fabsf(h_volga    - analytical_volga));
 
     cudaFree(d_swaption);
     cudaFree(d_vega);
+    cudaFree(d_volga);
 }
 
 void finitedifferences_mc_swaption_vega(float T_expiry, curandState* d_states,
                                          float* d_P_market, float* d_f_market){
-   
+
     float eps          = 0.001f;
     unsigned long seed = time(NULL);
 
     float* d_swaption_plus  = nullptr;
     float* d_swaption_minus = nullptr;
     float* d_vega_dummy     = nullptr;
+    float* d_volga_dummy    = nullptr;
     cudaMalloc(&d_swaption_plus,  sizeof(float));
     cudaMalloc(&d_swaption_minus, sizeof(float));
     cudaMalloc(&d_vega_dummy,     sizeof(float));
+    cudaMalloc(&d_volga_dummy,    sizeof(float));
 
-    float sig_p   = host_sigma + eps;
-    float shock_p = sig_p * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
-    cudaMemset(d_swaption_plus, 0, sizeof(float));
-    cudaMemset(d_vega_dummy,    0, sizeof(float));
-    cudaMemcpyToSymbol(device_sigma,              &sig_p,   sizeof(float));
-    cudaMemcpyToSymbol(device_std_gaussian_shock, &shock_p, sizeof(float));
-    init_rng<<<NB, NTPB>>>(d_states, seed);
-    cudaDeviceSynchronize();
-    mc_payer_swaption<<<NB, NTPB>>>(d_swaption_plus, d_vega_dummy, d_states,
-                               T_expiry, d_P_market, d_f_market);
-    cudaDeviceSynchronize();
+    auto run_pass = [&](float sig, float* d_out){
+        float shock = sig * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
+        cudaMemset(d_out,         0, sizeof(float));
+        cudaMemset(d_vega_dummy,  0, sizeof(float));
+        cudaMemset(d_volga_dummy, 0, sizeof(float));
+        cudaMemcpyToSymbol(device_sigma,              &sig,   sizeof(float));
+        cudaMemcpyToSymbol(device_std_gaussian_shock, &shock, sizeof(float));
+        init_rng<<<NB, NTPB>>>(d_states, seed);
+        cudaDeviceSynchronize();
+        mc_payer_swaption_volga<<<NB, NTPB>>>(d_out, d_vega_dummy, d_volga_dummy,
+                                               d_states, T_expiry,
+                                               d_P_market, d_f_market);
+        cudaDeviceSynchronize();
+    };
 
-    float sig_m   = host_sigma - eps;
-    float shock_m = sig_m * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
-    cudaMemset(d_swaption_minus, 0, sizeof(float));
-    cudaMemset(d_vega_dummy,     0, sizeof(float));
-    cudaMemcpyToSymbol(device_sigma,              &sig_m,   sizeof(float));
-    cudaMemcpyToSymbol(device_std_gaussian_shock, &shock_m, sizeof(float));
-    init_rng<<<NB, NTPB>>>(d_states, seed);
-    cudaDeviceSynchronize();
-    mc_payer_swaption<<<NB, NTPB>>>(d_swaption_minus, d_vega_dummy, d_states,
-                               T_expiry, d_P_market, d_f_market);
-    cudaDeviceSynchronize();
+    run_pass(host_sigma + eps, d_swaption_plus);
+    run_pass(host_sigma - eps, d_swaption_minus);
 
     float shock_orig = host_sigma * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
     cudaMemcpyToSymbol(device_sigma,              &host_sigma,  sizeof(float));
@@ -268,12 +273,70 @@ void finitedifferences_mc_swaption_vega(float T_expiry, curandState* d_states,
     h_plus  /= N_PATHS;
     h_minus /= N_PATHS;
 
-    float vega_fd = (h_plus - h_minus) / (2.0f * eps);
-    LOG_INFO("FD vega          : %.6f", vega_fd);
+    LOG_INFO("FD vega          : %.6f", (h_plus - h_minus) / (2.0f * eps));
 
     cudaFree(d_swaption_plus);
     cudaFree(d_swaption_minus);
     cudaFree(d_vega_dummy);
+    cudaFree(d_volga_dummy);
+}
+
+void finitedifferences_mc_swaption_volga(float T_expiry, curandState* d_states,
+                                          float* d_P_market, float* d_f_market){
+
+    float eps          = 0.001f;
+    unsigned long seed = time(NULL);
+
+    float* d_swaption_plus  = nullptr;
+    float* d_swaption_mid   = nullptr;
+    float* d_swaption_minus = nullptr;
+    float* d_vega_dummy     = nullptr;
+    float* d_volga_dummy    = nullptr;
+    cudaMalloc(&d_swaption_plus,  sizeof(float));
+    cudaMalloc(&d_swaption_mid,   sizeof(float));
+    cudaMalloc(&d_swaption_minus, sizeof(float));
+    cudaMalloc(&d_vega_dummy,     sizeof(float));
+    cudaMalloc(&d_volga_dummy,    sizeof(float));
+
+    auto run_pass = [&](float sig, float* d_out){
+        float shock = sig * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
+        cudaMemset(d_out,         0, sizeof(float));
+        cudaMemset(d_vega_dummy,  0, sizeof(float));
+        cudaMemset(d_volga_dummy, 0, sizeof(float));
+        cudaMemcpyToSymbol(device_sigma,              &sig,   sizeof(float));
+        cudaMemcpyToSymbol(device_std_gaussian_shock, &shock, sizeof(float));
+        init_rng<<<NB, NTPB>>>(d_states, seed);
+        cudaDeviceSynchronize();
+        mc_payer_swaption_volga<<<NB, NTPB>>>(d_out, d_vega_dummy, d_volga_dummy,
+                                               d_states, T_expiry,
+                                               d_P_market, d_f_market);
+        cudaDeviceSynchronize();
+    };
+
+    run_pass(host_sigma + eps, d_swaption_plus);
+    run_pass(host_sigma,       d_swaption_mid);
+    run_pass(host_sigma - eps, d_swaption_minus);
+
+    float shock_orig = host_sigma * sqrtf((1.0f - expf(-2.0f*host_a*host_dt)) / (2.0f*host_a));
+    cudaMemcpyToSymbol(device_sigma,              &host_sigma,  sizeof(float));
+    cudaMemcpyToSymbol(device_std_gaussian_shock, &shock_orig,  sizeof(float));
+
+    float h_plus, h_mid, h_minus;
+    cudaMemcpy(&h_plus,  d_swaption_plus,  sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_mid,   d_swaption_mid,   sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_minus, d_swaption_minus, sizeof(float), cudaMemcpyDeviceToHost);
+    h_plus  /= N_PATHS;
+    h_mid   /= N_PATHS;
+    h_minus /= N_PATHS;
+
+    LOG_INFO("FD volga         : %.6f",
+             (h_plus - 2.0f * h_mid + h_minus) / (eps * eps));
+
+    cudaFree(d_swaption_plus);
+    cudaFree(d_swaption_mid);
+    cudaFree(d_swaption_minus);
+    cudaFree(d_vega_dummy);
+    cudaFree(d_volga_dummy);
 }
 
 int main(){
@@ -341,17 +404,27 @@ int main(){
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     cudaDeviceSynchronize();
 
-    monteCarlo_swaption(1.0f, d_states, d_P_market, d_f_market, ps_analytical);
+    float ps_analytical_vega  = analytical_payer_swaption_vega(1.0f, tenor_dates, n_tenors, c,
+                                                            h_P, h_f, host_a, host_sigma,
+                                                            host_r0, MAT_SPACING, N_MAT);
+    float ps_analytical_volga = analytical_payer_swaption_volga(1.0f, tenor_dates, n_tenors, c,
+                                                             h_P, h_f, host_a, host_sigma,
+                                                             host_r0, MAT_SPACING, N_MAT);
+    monteCarlo_swaption(1.0f, d_states, d_P_market, d_f_market,
+                        ps_analytical, ps_analytical_vega, ps_analytical_volga);
 
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     cudaDeviceSynchronize();
-
-    float ps_vega_analytical = analytical_payer_swaption_vega(1.0f, tenor_dates, n_tenors, c,
-                                                         h_P, h_f, host_a, host_sigma,
-                                                         host_r0, MAT_SPACING, N_MAT);
-    LOG_INFO("Analytical Swaption Vega  : %.6f", ps_vega_analytical);
     finitedifferences_mc_swaption_vega(1.0f, d_states, d_P_market, d_f_market);
 
+    init_rng<<<NB, NTPB>>>(d_states, time(NULL));
+    cudaDeviceSynchronize();
+    finitedifferences_mc_swaption_volga(1.0f, d_states, d_P_market, d_f_market);
+
+    cudaFree(d_states);
+    cudaFree(d_P_market);
+    cudaFree(d_f_market);
+    return 0;
     cudaFree(d_states);
     cudaFree(d_P_market);
     cudaFree(d_f_market);

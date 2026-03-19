@@ -128,7 +128,8 @@ inline float analytical_payer_swaption_volga(float T, const float* tenor_dates, 
                                         maturity_spacing, n_maturities);
 
     MarketCurve curve{a, sigma, host_Price, host_fwd_rate, maturity_spacing, n_maturities};
-   
+
+    float srvn_T = (1.0f - expf(-2.0f * a * T)) / (2.0f * a);
 
     float volga = 0.0f;
 
@@ -136,41 +137,23 @@ inline float analytical_payer_swaption_volga(float T, const float* tenor_dates, 
         float X_i    = curve.P(T, tenor_dates[i], r_star);
         float B_T_Ti = BtT(T, tenor_dates[i], a);
 
-        // same as in VEGA
-        float dXi_dsigma = - X_i * (sigma / (2.0f * a))
-                      * (1.0f - expf(-2.0f * a * T)) * B_T_Ti * B_T_Ti;
+        PricingState ps = make_pricing_state(0.0f, T, tenor_dates[i], X_i,
+                                             r0, a, sigma, curve);
 
-        // ∂²Xi/∂σ² 
-        float d2Xi_ds2    = X_i * (sigma / (2.0f * a))
-                      * (1.0f - expf(-2.0f * a * T)) * B_T_Ti * B_T_Ti
-                          * (sigma * sigma * (sigma / (2.0f * a))
-                      * (1.0f - expf(-2.0f * a * T)) * B_T_Ti * B_T_Ti - 1.0f);
+        // ∂h/∂σ = dsp_ds · (σ_p - h) / σ_p
+        float dh_ds = ps.dsp_ds * (ps.sigma_p - ps.h) / ps.sigma_p;
 
-        
-        PricingState ps   = make_pricing_state(0.0f, T, tenor_dates[i], X_i,
-                                               r0, a, sigma, curve);
-        float phi_hm      = expf(-(ps.h - ps.sigma_p) * (ps.h - ps.sigma_p) * 0.5f)
-                          / sqrtf(2.0f * 3.14159265f);   // φ(h - σ_p)
+        // term 1: Φ(-h+σ_p) · Xi·P(0,T) · srvn_T · Bi² · (σ²·srvn_T·Bi² - 1)
+        float term1 = normcdff(-ps.h + ps.sigma_p)
+                    * X_i * ps.bT.P
+                    * srvn_T * B_T_Ti * B_T_Ti
+                    * (sigma * sigma * srvn_T * B_T_Ti * B_T_Ti - 1.0f);
 
-        // ∂ZBP/∂Xi = P(0,T)·Φ(-h+σ_p)
-        float dZBP_dXi    = ps.bT.P * normcdff(-ps.h + ps.sigma_p);
+        // term 2: (σ_p/σ) · P(0,ti) · φ(-hi) · hi · dh_ds
+        //       = dsp_ds · PS_phi_h · h · dh_ds
+        float term2 = ps.dsp_ds * ps.PS_phi_h * (-ps.h) * dh_ds;
 
-        //  ∂²ZBP/∂Xi² = P(0,T)·φ(-h+σ_p)/(Xi·σ_p) 
-        float d2ZBP_dXi2  = ps.bT.P * phi_hm / (X_i * ps.sigma_p);
-
-        // cross ∂²ZBP/∂σ∂Xi 
-        // from differentiating dZBP_dXi w.r.t σ:
-        // ∂h/∂σ = -h·dsp_ds/σ_p  (from h = lnM/σ_p + σ_p/2, dsp_ds = σ_p/σ)
-        float dh_ds       = -ps.h * ps.dsp_ds / ps.sigma_p;
-        float d2ZBP_dsdXi = ps.bT.P * phi_hm * (ps.dsp_ds - dh_ds) / (X_i * ps.sigma_p);
-
-         
-        float zbp_volga   = volga_ZBP_volga_from_state(ps);   
-
-        volga += c[i] * (zbp_volga
-                       + 2.0f * d2ZBP_dsdXi * dXi_ds
-                       + d2ZBP_dXi2         * dXi_ds * dXi_ds
-                       + dZBP_dXi           * d2Xi_ds2);
+        volga += c[i] * (term1 + term2);
     }
     return volga;
 }
