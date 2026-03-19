@@ -257,7 +257,7 @@ __global__ void mc_zbc_vega(float* ZBC_estimator, float* vega_estimator,
             atomicAdd(vega_estimator, shared_vega[0]);
         }
 }
-__global__ void mc_swaption(float* swaption_estimator, float* vega_estimator,
+__global__ void mc_payer_swaption(float* swaption_estimator, float* vega_estimator,
                              curandState* states,
                              float T, const float* d_P_market, const float* d_f_market){
 
@@ -298,12 +298,12 @@ __global__ void mc_swaption(float* swaption_estimator, float* vega_estimator,
         }
 
         float discount_factor  = expf(-discount_factor_integral);
-        float in_the_money     = (swap_value > 1.0f) ? 1.0f : 0.0f;
+        float in_the_money = (swap_value < 1.0f) ? 1.0f : 0.0f;
 
-        thread_swaption = discount_factor * fmaxf(swap_value - 1.0f, 0.0f);
-        thread_vega     = discount_factor * dswap_dsigma * in_the_money
-                        - drdsigma_integral * discount_factor
-                          * fmaxf(swap_value - 1.0f, 0.0f);
+        thread_swaption = discount_factor * fmaxf(1.0f - swap_value, 0.0f);
+        thread_vega     = discount_factor * (-dswap_dsigma) * in_the_money
+                - drdsigma_integral * discount_factor
+                  * fmaxf(1.0f - swap_value, 0.0f);
 
         states[path_id] = local_state;
     }

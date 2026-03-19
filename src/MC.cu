@@ -202,7 +202,7 @@ void monteCarlo_swaption(float T_expiry, curandState* d_states,
     cudaMemset(d_vega,     0, sizeof(float));
 
     init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
-    mc_swaption<<<NB, NTPB>>>(d_swaption, d_vega, d_states,
+    mc_payer_swaption<<<NB, NTPB>>>(d_swaption, d_vega, d_states,
                                T_expiry, d_P_market, d_f_market);
     cudaDeviceSynchronize();
 
@@ -242,7 +242,7 @@ void finitedifferences_mc_swaption_vega(float T_expiry, curandState* d_states,
     cudaMemcpyToSymbol(device_std_gaussian_shock, &shock_p, sizeof(float));
     init_rng<<<NB, NTPB>>>(d_states, seed);
     cudaDeviceSynchronize();
-    mc_swaption<<<NB, NTPB>>>(d_swaption_plus, d_vega_dummy, d_states,
+    mc_payer_swaption<<<NB, NTPB>>>(d_swaption_plus, d_vega_dummy, d_states,
                                T_expiry, d_P_market, d_f_market);
     cudaDeviceSynchronize();
 
@@ -254,7 +254,7 @@ void finitedifferences_mc_swaption_vega(float T_expiry, curandState* d_states,
     cudaMemcpyToSymbol(device_std_gaussian_shock, &shock_m, sizeof(float));
     init_rng<<<NB, NTPB>>>(d_states, seed);
     cudaDeviceSynchronize();
-    mc_swaption<<<NB, NTPB>>>(d_swaption_minus, d_vega_dummy, d_states,
+    mc_payer_swaption<<<NB, NTPB>>>(d_swaption_minus, d_vega_dummy, d_states,
                                T_expiry, d_P_market, d_f_market);
     cudaDeviceSynchronize();
 
@@ -346,7 +346,7 @@ int main(){
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     cudaDeviceSynchronize();
 
-    float ps_vega_analytical = analytical_swaption_vega(1.0f, tenor_dates, n_tenors, c,
+    float ps_vega_analytical = analytical_payer_swaption_vega(1.0f, tenor_dates, n_tenors, c,
                                                          h_P, h_f, host_a, host_sigma,
                                                          host_r0, MAT_SPACING, N_MAT);
     LOG_INFO("Analytical Swaption Vega  : %.6f", ps_vega_analytical);

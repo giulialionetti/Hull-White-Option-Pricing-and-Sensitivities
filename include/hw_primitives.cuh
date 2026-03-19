@@ -38,10 +38,14 @@ __host__ __device__ inline float interpolate(const float* data, float T,
     // For any query maturity T that falls between grid points, we interpolate
     // linearly between the two bracketing values. For T beyond the last grid
     // point we return the last value (flat extrapolation).
-    int   idx   = (int)(T / mat_spacing);
-    if   (idx  >= n_mat - 1) return data[n_mat - 1];
+    int idx = (int)(T / mat_spacing);
+
+    if(idx  >= n_mat - 1) 
+       return data[n_mat - 1];
+
     float t0    = idx * mat_spacing;
     float alpha = (T - t0) / mat_spacing;
+
     return data[idx] * (1.0f - alpha) + data[idx + 1] * alpha;
 }
 

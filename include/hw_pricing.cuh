@@ -10,13 +10,13 @@
 // Ref: Brigo-Mercurio eq. 3.40-3.41, p.76
 
 __host__ __device__ inline float ZBC_from_state(const PricingState& ps){
-    // P(t,S)*Φ(h) - K*P(t,T)*Φ(h - sigma_p)
+    // P(t,S)*phi(h) - K*P(t,T)*phi(h - sigma_p)
     return  ps.bS.P * normcdff( ps.h)
           - ps.K * ps.bT.P * normcdff( ps.h - ps.sigma_p);
 }
 
 __host__ __device__ inline float ZBP_from_state(const PricingState& ps){
-    // K*P(t,T)*Φ(-h + sigma_p) - P(t,S)*Φ(-h)
+    // K*P(t,T)*phi(-h + sigma_p) - P(t,S)*phi(-h)
     return  ps.K * ps.bT.P * normcdff(-ps.h + ps.sigma_p)
           - ps.bS.P * normcdff(-ps.h);
 }
