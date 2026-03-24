@@ -51,7 +51,7 @@ __global__ void simulate_option(float* out,
         float sens_through_rT     = B_TS * dr_dsigma;
 
         float dP_S_ds = -P_S * (sens_through_A_T_S + sens_through_rT);
-        float d2P_S_ds2 = P_S * (sens_through_A_T_S + sens_through_rT) * (sens_through_A_T_S + sens_through_rT) - dsens_through_A_ds;
+        float d2P_S_ds2 = P_S * (sens_through_A_T_S + sens_through_rT) * (sens_through_A_T_S + sens_through_rT) - P_S * dsens_through_A_ds;
 
         float pay_zbc = fmaxf(P_S - X, 0.0f);
         float pay_zbp = fmaxf(X - P_S, 0.0f);
@@ -66,7 +66,7 @@ __global__ void simulate_option(float* out,
                                   - dr_dsigma_integral * disc * pay_zbp;
 
         s_volga_zbc[threadIdx.x] = disc * d2P_S_ds2 * itm_zbc
-                          -  dr_dsigma_integral * disc * dP_S_ds * itm_zbc
+                          - dr_dsigma_integral * disc * dP_S_ds * itm_zbc
                           + dr_dsigma_integral * dr_dsigma_integral * disc * pay_zbc;
 
         s_volga_zbp[threadIdx.x] = - disc * d2P_S_ds2 * itm_zbp
