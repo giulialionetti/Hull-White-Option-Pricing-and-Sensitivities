@@ -52,11 +52,12 @@ __host__ __device__ inline float volga_zbc(const EuroOption& o,
 
     float dP_S_ds   = dP_dsigma(B_S, o.P_S, sigma, a, t);
     float dP_T_ds   = dP_dsigma(B_T, o.P_T, sigma, a, t);
-    float d2P_S_ds2 = d2P_dsigma2(B_S, o.P_S, sigma, a, t); // term 2
-    float d2P_T_ds2 = d2P_dsigma2(B_T, o.P_T, sigma, a, t); // term3
+    float d2P_S_ds2 = d2P_dsigma2(B_S, o.P_S, sigma, a, t); 
+    float d2P_T_ds2 = d2P_dsigma2(B_T, o.P_T, sigma, a, t);
 
     float srvn      = (1.0f - expf(-2.0f * a * t)) / (2.0f * a);
-    - sigma * srvn * (B_S * B_S - B_T * B_T) / o.sigma_p;  
+    float dh_ds = dsp_ds * (o.sigma_p - o.h) / o.sigma_p
+            - sigma * srvn * (B_S * B_S - B_T * B_T) / o.sigma_p;    
 
     float term1     = (dP_S_ds * phi_h - o.P_S * phi_h * o.h * dh_ds) * dsp_ds;
     float term2     = phi_h * dh_ds * dP_S_ds + normcdff(o.h) * d2P_S_ds2;
