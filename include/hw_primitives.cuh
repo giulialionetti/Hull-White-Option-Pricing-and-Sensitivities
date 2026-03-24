@@ -2,7 +2,7 @@
 #define HW_PRIMITIVES_CUH
 
 #include <cmath>
-
+#include "hw_primitives_derivs.cuh"
 // Section 1:
 // this section contains the foundational blocks of the Hull-White model,
 // its functions of time and parameters. Every higher-level formula
@@ -82,6 +82,24 @@ struct FlatCurve {
 
     __host__ __device__ FlatCurve   with_sigma(float s) const { return {a, s,     r0}; }
     __host__ __device__ FlatCurve   with_a    (float x) const { return {x, sigma, r0}; }
+    // FlatCurve — f0 = r0 (constant, t and T unused but kept for interface consistency)
+    __host__ __device__ float dlnA_da(float t, float T,
+                                   const BtT_a_derivs& bda,
+                                   const srvn_a_derivs& sda) const {
+    float hs2 = 0.5f * sigma * sigma;
+    return r0 * bda.dB_da
+           - hs2 * (sda.dsrvn_da  * bda.B * bda.B
+                  + 2.0f * sda.srvn * bda.B * bda.dB_da);}
+
+    __host__ __device__ float d2lnA_da2(float t, float T,
+                                     const BtT_a_derivs& bda,
+                                     const srvn_a_derivs& sda) const {
+    float hs2 = 0.5f * sigma * sigma;
+    return r0 * bda.d2B_da2
+           - hs2 * (sda.d2srvn_da2 * bda.B  * bda.B
+                  + 4.0f * sda.dsrvn_da  * bda.B  * bda.dB_da
+                  + 2.0f * sda.srvn     * bda.dB_da * bda.dB_da
+                  + 2.0f * sda.srvn     * bda.B  * bda.d2B_da2);}
 };
 
 struct MarketCurve {
@@ -121,6 +139,26 @@ struct MarketCurve {
     __host__ __device__ MarketCurve with_a(float x) const {
         return {x, sigma, P_market, f_market, mat_spacing, n_mat};
     }
+    // MarketCurve — f0 = f^M(0,t) read from the market curve (T unused)
+    __host__ __device__ float dlnA_da(float t, float T,
+                                   const BtT_a_derivs& bda,
+                                   const srvn_a_derivs& sda) const {
+    float f0  = interpolate(f_market, t, mat_spacing, n_mat);
+    float hs2 = 0.5f * sigma * sigma;
+    return f0 * bda.dB_da
+           - hs2 * (sda.dsrvn_da  * bda.B * bda.B
+                  + 2.0f * sda.srvn * bda.B * bda.dB_da);}
+
+    __host__ __device__ float d2lnA_da2(float t, float T,
+                                     const BtT_a_derivs& bda,
+                                     const srvn_a_derivs& sda) const {
+    float f0  = interpolate(f_market, t, mat_spacing, n_mat);
+    float hs2 = 0.5f * sigma * sigma;
+    return f0 * bda.d2B_da2
+           - hs2 * (sda.d2srvn_da2 * bda.B  * bda.B
+                  + 4.0f * sda.dsrvn_da  * bda.B  * bda.dB_da
+                  + 2.0f * sda.srvn     * bda.dB_da * bda.dB_da
+                  + 2.0f * sda.srvn     * bda.B  * bda.d2B_da2);}
 };
 
 // Section 3: Bond Derivatives
@@ -141,6 +179,10 @@ struct BondDerivatives {
     float dP_ds;    // ∂P/∂σ    
     float d2P_dr2;  // ∂²P/∂r²  
     float d2P_ds2;  // ∂²P/∂σ²  
+    float dP_da;    // ∂P/∂a
+    float d2P_dr2;  // ∂²P/∂r²  
+    float d2P_ds2;  // ∂²P/∂σ²
+    float d2P_da2;  // ∂²P/∂a²
 };
 
 
@@ -161,6 +203,17 @@ __host__ __device__ inline BondDerivatives bond_derivs(float t, float T_mat,
     d.d2P_dr2 =  d.B * d.B * d.P;
     d.d2P_ds2 =  d.P * srvn * d.B * d.B
                  * (sigma * sigma * srvn * d.B * d.B - 1.0f);
+
+     // ∂P/∂a and ∂²P/∂a² via log-derivative identity
+    BtT_a_derivs  bda = BtT_da(t, T_mat, curve.a);
+    srvn_a_derivs sda = srvn_da(t, curve.a);
+    AtT_a_derivs  ada = AtT_da(t, T_mat, rt, sigma, curve);
+    PtT_a_derivs  pda = PtT_da(t, T_mat, rt, ada, bda);
+
+    d.dP_da   = pda.dP_da;
+    d.d2P_da2 = pda.d2P_da2;
+
+
     return d;
 }
 
@@ -193,7 +246,8 @@ struct PricingState {
     float PS_phi_h;          // P(t,S)*φ(h) = K*P(t,T)*φ(h-sigma_p)
 
     float srvn;             
-    float K;                 
+    float K;     
+    float dsp_da;   // ∂sigma_p/∂a            
 };
 
 // Build a PricingState from raw inputs.
@@ -237,6 +291,14 @@ __host__ __device__ inline PricingState make_pricing_state(float t, float T,
 
     // P(t,S)phi(h) = KP(t, T)phi(h - σ_p)
     ps.PS_phi_h = ps.bS.P * ps.phi_h;
+
+    // ∂σ_p/∂a — needs srvn and B derivatives at (T-t) and (T,S) respectively
+    // σ_p = σ * sqrt(srvn(T-t, a)) * B(T,S)
+    // log-differentiating: ∂σ_p/∂a = σ_p * (srvn'(T-t) / (2*srvn(T-t)) + B'(T,S)/B(T,S))
+    srvn_a_derivs sda_Tt = srvn_da(T - t, a);
+    BtT_a_derivs  bda_TS = BtT_da(T, S, a);
+    ps.dsp_da = ps.sigma_p * (sda_Tt.dsrvn_da / (2.0f * sda_Tt.srvn)
+                             + bda_TS.dB_da   /  B_TS);
 
     return ps;
 }

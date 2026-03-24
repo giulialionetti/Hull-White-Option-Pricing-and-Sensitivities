@@ -2,19 +2,16 @@ NVCC  = $(shell which nvcc)
 BIN   = bin
 FLAGS = -arch=sm_70 -O3 -I./include
 
-all:  MC
+all: test
 
-
-MC: src/MC.cu
+test: refactor/test.cu
 	@mkdir -p $(BIN)
-	$(NVCC) $(FLAGS) src/MC.cu -o $(BIN)/MC
+	$(NVCC) $(FLAGS) refactor/test.cu -o $(BIN)/test
 
-
-
-run_MC: MC
-	./$(BIN)/MC
+run: test
+	./$(BIN)/test
 
 clean:
 	rm -rf $(BIN)
 
-.PHONY: all run_MC clean
+.PHONY: all run clean

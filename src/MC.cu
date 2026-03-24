@@ -1,38 +1,40 @@
 #include "mc.cuh"
 #include "logger.h"
 #include "calibration.cuh"
-
 void analytical_greeks(float t, float T, float S, float K, float rt){
 
     auto ps = make_pricing_state(t, T, S, K, rt,
                                  host_a, host_sigma,
                                  FlatCurve{host_a, host_sigma, host_r0});
 
-    float zbc       = ZBC_from_state(ps);
-    float zbp       = ZBP_from_state(ps);
-    float vega_zbc  = vega_ZBC_from_state(ps);
-    float vega_zbp  = vega_ZBP_from_state(ps);
-    float delta_zbc = delta_ZBC_from_state(ps);
-    float delta_zbp = delta_ZBP_from_state(ps);
+    float zbc        = ZBC_from_state(ps);
+    float zbp        = ZBP_from_state(ps);
+    float vega_zbc   = vega_ZBC_from_state(ps);
+    float vega_zbp   = vega_ZBP_from_state(ps);
+    float delta_zbc  = delta_ZBC_from_state(ps);
+    float delta_zbp  = delta_ZBP_from_state(ps);
+    float gamma_zbc  = gamma_ZBC_from_state(ps);
+    float gamma_zbp  = gamma_ZBP_from_state(ps);
+    float volga_zbc  = volga_ZBC_from_state(ps);
+    float volga_zbp  = volga_ZBP_from_state(ps);
 
-    
-    float parity     = expf(-host_r0 * S) - K * expf(-host_r0 * T);
-    float parity_err = (zbc - zbp) - parity;
+    //float parity     = expf(-host_r0 * S) - K * expf(-host_r0 * T);
+    //float parity_err = (zbc - zbp) - parity;
 
     LOG_INFO("=== Analytical Pricing ===");
     LOG_INFO("Params: t=%.2f  T=%.2f  S=%.2f  K=%.6f  r0=%.6f", t, T, S, K, rt);
-    LOG_INFO("ZBC               : %.6f", zbc);
-    LOG_INFO("ZBP               : %.6f", zbp);
-    LOG_INFO("ZBC - ZBP         : %.6f", zbc - zbp);
-    LOG_INFO("P(0,S) - K*P(0,T) : %.6f", parity);
-    if (fabsf(parity_err) < 1e-5f)
+    LOG_INFO("%-16s  %-12s  %-12s  %-12s  %-12s  %-12s",
+             "", "Price", "Delta", "Gamma", "Vega", "Volga");
+    LOG_INFO("%-16s  %-12.6f  %-12.6f  %-12.6f  %-12.6f  %-12.6f",
+             "ZBC", zbc, delta_zbc, gamma_zbc, vega_zbc, volga_zbc);
+    LOG_INFO("%-16s  %-12.6f  %-12.6f  %-12.6f  %-12.6f  %-12.6f",
+             "ZBP", zbp, delta_zbp, gamma_zbp, vega_zbp, volga_zbp);
+
+   /*LOG_INFO("ZBC - ZBP         : %.6f  |  P(0,S)-K*P(0,T): %.6f", zbc - zbp, parity);
+    if(fabsf(parity_err) < 1e-5f)
         LOG_INFO("Put-call parity   : OK   (err=%.2e)", parity_err);
     else
-        LOG_WARN("Put-call parity   : FAIL (err=%.2e)", parity_err);
-    LOG_INFO("Vega  ZBC         : %.6f", vega_zbc);
-    LOG_INFO("Delta ZBC         : %.6f", delta_zbc);
-    LOG_INFO("Vega  ZBP         : %.6f", vega_zbp);
-    LOG_INFO("Delta ZBP         : %.6f", delta_zbp);
+        LOG_WARN("Put-call parity   : FAIL (err=%.2e)", parity_err);*/
 }
 
 int main(){
@@ -65,20 +67,40 @@ int main(){
     init_rng<<<NB, NTPB>>>(d_states, time(NULL));
     cudaDeviceSynchronize();
 
-    init_device_constants(host_sigma, CurveType::FLAT);
+    /*init_device_constants(host_sigma, CurveType::FLAT);
     monteCarlo_vega(T, S, K, d_states, CurveType::FLAT);
     finitedifferences_mc_vega(T, S, K, d_states, CurveType::FLAT);
+    finitedifferences_mc_zbc_volga(T, S, K, d_states, CurveType::FLAT);
+    finitedifferences_mc_delta_gamma(T, S, K, d_states, CurveType::FLAT);
 
     init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
     monteCarlo_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
     finitedifferences_mc_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    finitedifferences_mc_zbc_volga(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    finitedifferences_mc_delta_gamma(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);*/
+
+    init_device_constants(host_sigma, CurveType::FLAT);
+    monteCarlo_vega(T, S, K, d_states, CurveType::FLAT);
+    finitedifferences_mc_vega(T, S, K, d_states, CurveType::FLAT);
+    finitedifferences_mc_zbc_volga(T, S, K, d_states, CurveType::FLAT);
+    monteCarlo_delta_gamma(T, S, K, d_states);
+
+    init_device_constants(host_sigma, CurveType::PIECEWISE_LINEAR);
+    monteCarlo_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    finitedifferences_mc_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    finitedifferences_mc_zbc_volga(T, S, K, d_states, CurveType::PIECEWISE_LINEAR);
+    monteCarlo_delta_gamma(T, S, K, d_states);
 
     init_device_constants_calibrated(h_f);
     monteCarlo_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR,
                     d_P_market, d_f_market, h_P, h_f);
     finitedifferences_mc_vega(T, S, K, d_states, CurveType::PIECEWISE_LINEAR,
                                d_P_market, d_f_market, h_P, h_f);
+    finitedifferences_mc_zbc_volga(T, S, K, d_states, CurveType::PIECEWISE_LINEAR,
+                                    d_P_market, d_f_market);
+    monteCarlo_delta_gamma(T, S, K, d_states, d_P_market, d_f_market, h_P, h_f);
 
+  
     float tenor_dates[] = {2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     int   n_tenors      = 5;
 
@@ -101,11 +123,11 @@ int main(){
     cudaDeviceSynchronize();
 
     float ps_analytical_vega  = analytical_payer_swaption_vega(1.0f, tenor_dates, n_tenors, c,
-                                                            h_P, h_f, host_a, host_sigma,
-                                                            host_r0, MAT_SPACING, N_MAT);
+                                                                h_P, h_f, host_a, host_sigma,
+                                                                host_r0, MAT_SPACING, N_MAT);
     float ps_analytical_volga = analytical_payer_swaption_volga(1.0f, tenor_dates, n_tenors, c,
-                                                             h_P, h_f, host_a, host_sigma,
-                                                             host_r0, MAT_SPACING, N_MAT);
+                                                                 h_P, h_f, host_a, host_sigma,
+                                                                 host_r0, MAT_SPACING, N_MAT);
     monteCarlo_swaption(1.0f, d_states, d_P_market, d_f_market,
                         ps_analytical, ps_analytical_vega, ps_analytical_volga);
 
@@ -117,12 +139,5 @@ int main(){
     cudaDeviceSynchronize();
     finitedifferences_mc_swaption_volga(1.0f, d_states, d_P_market, d_f_market);
 
-    cudaFree(d_states);
-    cudaFree(d_P_market);
-    cudaFree(d_f_market);
-    return 0;
-    cudaFree(d_states);
-    cudaFree(d_P_market);
-    cudaFree(d_f_market);
     return 0;
 }
