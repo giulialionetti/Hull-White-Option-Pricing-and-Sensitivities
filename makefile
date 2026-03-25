@@ -4,9 +4,9 @@ FLAGS = -arch=sm_70 -O3 -I./include
 
 all: test
 
-test: refactor/test.cu
+test: src/test.cu
 	@mkdir -p $(BIN)
-	$(NVCC) $(FLAGS) refactor/test.cu -o $(BIN)/test
+	$(NVCC) $(FLAGS) src/test.cu -o $(BIN)/test
 
 run: test
 	./$(BIN)/test

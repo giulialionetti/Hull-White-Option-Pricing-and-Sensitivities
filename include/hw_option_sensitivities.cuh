@@ -3,6 +3,7 @@
 
 #include "hw_option_pricing.cuh"
 #include "hw_bond_dsigma.cuh"
+#include "hw_bond_dr.cuh"
 
 
 __host__ __device__ inline float vega_zbc(const EuroOption& o,
@@ -79,5 +80,53 @@ __host__ __device__ inline float volga_zbp(const EuroOption& o,
          - d2P_S_ds2
          + o.X * d2P_T_ds2;
 }
+
+
+__host__ __device__ inline float delta_zbc(const EuroOption& o,
+                                            float t, float T, float S,
+                                            float a){
+    float B_S    = B(t, S, a);
+    float B_T    = B(t, T, a);
+    float dP_S_dr = dP_dr(B_S, o.P_S);
+    float dP_T_dr = dP_dr(B_T, o.P_T);
+
+    return dP_S_dr * normcdff(o.h)
+         - o.X * dP_T_dr * normcdff(o.h - o.sigma_p);
+}
+
+__host__ __device__ inline float delta_zbp(const EuroOption& o,
+                                            float t, float T, float S,
+                                            float a){
+    float B_S     = B(t, S, a);
+    float B_T     = B(t, T, a);
+    float dP_S_dr = dP_dr(B_S, o.P_S);
+    float dP_T_dr = dP_dr(B_T, o.P_T);
+
+    return delta_zbc(o, t, T, S, a)
+         - dP_S_dr
+         + o.X * dP_T_dr;
+}
+
+__host__ __device__ inline float gamma_zbc(const EuroOption& o,
+                                            float t, float T, float S,
+                                            float a){
+    float B_S      = B(t, S, a);
+    float B_T      = B(t, T, a);
+    float phi_h    = expf(-o.h * o.h * 0.5f) / sqrtf(2.0f * 3.14159265f);
+
+    return d2P_dr2(B_S, o.P_S) * normcdff(o.h)
+         - o.X * d2P_dr2(B_T, o.P_T) * normcdff(o.h - o.sigma_p)
+         + (o.P_S * phi_h)* (B_T - B_S) * (B_T - B_S) / o.sigma_p;
+}
+
+__host__ __device__ inline float gamma_zbp(const EuroOption& o,
+                                            float t, float T, float S,
+                                            float a){
+    return gamma_zbc(o, t, T, S, a)
+         - d2P_dr2(B(t, S, a), o.P_S)
+         + o.X * d2P_dr2(B(t, T, a), o.P_T);
+}
+
+
 
 #endif // HW_OPTION_SENSITIVITIES_CUH

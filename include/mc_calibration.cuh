@@ -11,7 +11,6 @@ inline void upload_drift(const float* th, float a, float sigma){
     float factor = (1.0f - expf(-a * host_dt)) / a;
     float host_drift_table[N_STEPS];
     float host_sensitivity_drift_table[N_STEPS];
-    float host_sensitivity_drift_table2[N_STEPS];
 
     for(int i = 0; i < N_STEPS; i++){
         float s_mid     = (i + 0.5f) * host_dt;
