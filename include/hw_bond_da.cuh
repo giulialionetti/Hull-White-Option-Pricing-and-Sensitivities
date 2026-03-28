@@ -65,6 +65,6 @@ __host__ __device__ inline float dsigmap_da(float t, float T, float S,
     float B_TS      = B(T, S, a);
     float dB_TS     = dB_da(T, S, a);
     return sigma_p * (dsrvn_tau / (2.0f * srvn_tau) + dB_TS / B_TS);
-}s
+}
 
 #endif // HW_BOND_DERIV_A_CUH

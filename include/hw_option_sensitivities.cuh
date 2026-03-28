@@ -4,6 +4,7 @@
 #include "hw_option_pricing.cuh"
 #include "hw_bond_dsigma.cuh"
 #include "hw_bond_dr.cuh"
+#include "hw_bond_da.cuh"
 
 
 __host__ __device__ inline float vega_zbc(const EuroOption& o,
@@ -141,7 +142,7 @@ __host__ __device__ inline float dZBC_da(const EuroOption& o,
     float dlnA_T   = dlnA_da(t, T, a, sigma, f0t, B_T, dB_T);
     float dP_S_da  = dP_da(o.P_S, rt, dB_S, dlnA_S);
     float dP_T_da  = dP_da(o.P_T, rt, dB_T, dlnA_T);
-    float dsigmap  = dsp_da(o, t, T, S, a);
+    float dsigmap  = dsigmap_da(t, T, S, a, o.sigma_p, sigma);
 
     return dP_S_da * normcdff(o.h)
          - o.X * dP_T_da * normcdff(o.h - o.sigma_p)

@@ -7,45 +7,13 @@ __constant__ float device_drift_table[N_STEPS];
 __constant__ float device_sensitivity_drift_table[N_STEPS];
 
 
-inline void upload_drift(const float* th, float a, float sigma){
-    float factor = (1.0f - expf(-a * host_dt)) / a;
-    float host_drift_table[N_STEPS];
-    float host_sensitivity_drift_table[N_STEPS];
 
-    for(int i = 0; i < N_STEPS; i++){
-        float s_mid     = (i + 0.5f) * host_dt;
-        float t_idx     = s_mid / MAT_SPACING;
-        int   idx       = (int)t_idx;
-        float alpha     = t_idx - idx;
-        float theta_mid = (idx >= N_MAT - 1)
-            ? th[N_MAT - 1]
-            : (1.0f - alpha) * th[idx] + alpha * th[idx + 1];
-
-        host_drift_table[i] = theta_mid * factor;
-
-        float s                  = i * host_dt;
-        float s_plus_dt          = s + host_dt;
-        float one_over_a_squared = 1.0f / (a * a);
-        host_sensitivity_drift_table[i] = one_over_a_squared
-                                        * 2.0f * sigma
-                                        * expf(-a * s_plus_dt)
-                                        * (coshf(a * s_plus_dt) - coshf(a * s));
-    
-
-
-    }
-
-    cudaMemcpyToSymbol(device_drift_table,             host_drift_table,
-                       N_STEPS * sizeof(float));
-    cudaMemcpyToSymbol(device_sensitivity_drift_table, host_sensitivity_drift_table,
-                       N_STEPS * sizeof(float));
-}
 
 inline void forward_rate(const float* log_P, float* f0){
     f0[0] = -(log_P[1] - log_P[0]) / MAT_SPACING;
     for(int i = 1; i < N_MAT - 1; i++)
-        f0[i] = -(log_P[i+1] - log_P[i-1]) / (2.0f * MAT_SPACING);
-    f0[N_MAT-1] = -(log_P[N_MAT-1] - log_P[N_MAT-2]) / MAT_SPACING;
+       f0[0]       = -(-3*log_P[0] + 4*log_P[1]   - log_P[2])   / (2.0f * MAT_SPACING);
+       f0[N_MAT-1] = -(log_P[N_MAT-3] - 4*log_P[N_MAT-2] + 3*log_P[N_MAT-1]) / (2.0f * MAT_SPACING);
 }
 
 inline void theta(const float* log_P, const float* f0,
@@ -58,6 +26,37 @@ inline void theta(const float* log_P, const float* f0,
     }
     th[0]       = th[1];
     th[N_MAT-1] = th[N_MAT-2];
+}
+
+inline void upload_drift(const float* th, float a, float sigma){
+    float factor = (1.0f - expf(-a * host_dt)) / a;
+    float one_over_a_squared = 1.0f / (a * a);
+    float host_drift_table[N_STEPS];
+    float host_sensitivity_drift_table[N_STEPS];
+
+    float cosh_prev = 1.0f; // coshf(0) at s=0
+    
+    for(int i = 0; i < N_STEPS; i++){
+    float s_mid     = (i + 0.5f) * host_dt;
+    float t_idx     = s_mid / MAT_SPACING;
+    int   idx       = (int)t_idx;
+    float alpha     = t_idx - idx;
+    float theta_mid = (idx >= N_MAT - 1) ? th[N_MAT - 1] : (1.0f - alpha) * th[idx] + alpha * th[idx + 1];
+
+    host_drift_table[i] = theta_mid * factor;
+
+    float s_plus_dt  = (i + 1) * host_dt;
+    float cosh_next  = coshf(a * s_plus_dt);
+
+    host_sensitivity_drift_table[i] = one_over_a_squared * 2.0f * sigma * expf(-a * s_mid) * (cosh_next - cosh_prev);
+
+    cosh_prev = cosh_next;
+}
+
+    cudaMemcpyToSymbol(device_drift_table,host_drift_table,
+                       N_STEPS * sizeof(float));
+    cudaMemcpyToSymbol(device_sensitivity_drift_table, host_sensitivity_drift_table,
+                       N_STEPS * sizeof(float));
 }
 
 inline void calibrate(const float* h_P, float* f0, float a, float sigma){
