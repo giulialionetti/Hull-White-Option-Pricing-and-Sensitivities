@@ -1,16 +1,4 @@
-/*
- * generate_validation.cu
- *
- * Generates a validation CSV with both MC and analytical swaption
- * prices and sensitivities for the same parameter draws.
- *
- * MC outputs  : price, pathwise vega, pathwise delta, FD gamma
- * Analytical  : price, vega, volga, delta, gamma
- *
- * Usage:
- *   ./bin/generate_validation [N_SAMPLES] [output_csv]
- *   ./bin/generate_validation 500 data/swaption_validation.csv
- */
+
 
 #include "mc_calibration.cuh"
 #include "mc_market_price.cuh"
@@ -35,24 +23,21 @@ int main(int argc, char** argv) {
 
     srand((unsigned)time(NULL) + 99999);
 
-    /* ── GPU allocations ─────────────────────────────────────────────────── */
     curandState* d_states;
     cudaMalloc(&d_states, N_PATHS * sizeof(curandState));
 
-    float* d_P0;    cudaMalloc(&d_P0,    N_MAT * sizeof(float));
-    float* d_f0;    cudaMalloc(&d_f0,    N_MAT * sizeof(float));
-    float* d_out2;  cudaMalloc(&d_out2,  2     * sizeof(float));
-    float* d_out1;  cudaMalloc(&d_out1,  1     * sizeof(float));
+    float* d_P0;   cudaMalloc(&d_P0,   N_MAT * sizeof(float));
+    float* d_f0;   cudaMalloc(&d_f0,   N_MAT * sizeof(float));
+    float* d_out2; cudaMalloc(&d_out2, 2     * sizeof(float));
+    float* d_out1; cudaMalloc(&d_out1, 1     * sizeof(float));
 
     float* d_drift;
     float* d_sens_drift;
     alloc_drift_tables(&d_drift, &d_sens_drift);
 
-    /* Device copies of tenor_dates and c — passed as pointers into kernels  */
-    float* d_tenor_dates;  cudaMalloc(&d_tenor_dates, MAX_TENORS * sizeof(float));
-    float* d_c;            cudaMalloc(&d_c,            MAX_TENORS * sizeof(float));
+    float* d_tenor_dates; cudaMalloc(&d_tenor_dates, MAX_TENORS * sizeof(float));
+    float* d_c;           cudaMalloc(&d_c,            MAX_TENORS * sizeof(float));
 
-    /* ── Output CSV ─────────────────────────────────────────────────────── */
     FILE* fp = fopen(out_path, "w");
     if (!fp) { fprintf(stderr, "Cannot open %s\n", out_path); return 1; }
     fprintf(fp, "a,sigma,r0,T,swap_length,K,"
@@ -64,7 +49,6 @@ int main(int argc, char** argv) {
 
     for (int s = 0; s < N_SAMPLES; s++) {
 
-        /* ── Random parameters ──────────────────────────────────────────── */
         float a     = rand_uniform(0.10f,  2.00f);
         float sigma = rand_uniform(0.01f,  0.30f);
         float r0    = rand_uniform(0.001f, 0.05f);
@@ -78,21 +62,24 @@ int main(int argc, char** argv) {
         for (int i = 0; i < n_tenors; i++)
             tenor_dates[i] = T + (float)(i + 1);
 
-        /* ── Calibration pipeline ───────────────────────────────────────── */
-        HWParams p = params(a, sigma);
+        // ── Calibration ───────────────────────────────────────────────────
+        HWParams p = params(a, sigma);  
 
         init_drift(a, sigma, r0, d_drift, d_sens_drift);
 
-        init_rng<<<NB, NTPB>>>(d_states, base_seed + (unsigned long)s);
+        init_rng<<<NB, NTPB>>>(d_states,
+                                base_seed + (unsigned long)s,
+                                N_PATHS);  // fixed: added N_PATHS
         cudaDeviceSynchronize();
 
         float h_P[N_MAT];
-        simulate_market_price(h_P, d_states, d_drift, p, r0);
+        simulate_market_price(h_P, d_states, d_drift, p, r0,
+                              N_PATHS, NB);  // fixed: added N_PATHS, NB
 
         float f0[N_MAT];
         calibrate(h_P, f0, a, sigma, d_drift, d_sens_drift);
 
-        /* ── Strike ─────────────────────────────────────────────────────── */
+        // ── Strike ────────────────────────────────────────────────────────
         float K_atm     = par_swap_rate(T, tenor_dates, n_tenors, h_P);
         float moneyness = rand_uniform(0.80f, 1.20f);
         float K         = K_atm * moneyness;
@@ -102,16 +89,16 @@ int main(int argc, char** argv) {
             c[i] = K;
         c[n_tenors - 1] += 1.0f;
 
-        /* ── Upload curves + swaption data to device ────────────────────── */
         cudaMemcpy(d_P0,          h_P,         N_MAT    * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_f0,          f0,          N_MAT    * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_tenor_dates, tenor_dates, n_tenors * sizeof(float), cudaMemcpyHostToDevice);
         cudaMemcpy(d_c,           c,           n_tenors * sizeof(float), cudaMemcpyHostToDevice);
 
-        /* ── MC: price + pathwise vega ──────────────────────────────────── */
+        // ── MC: price + pathwise vega ──────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
-                                          + 1UL * (unsigned long)N_SAMPLES);
+                                          + 1UL * (unsigned long)N_SAMPLES,
+                                N_PATHS);  // fixed
         cudaDeviceSynchronize();
         cudaMemset(d_out2, 0, 2 * sizeof(float));
         simulate_swaption<<<NB, NTPB>>>(d_out2, d_states, d_P0, d_f0,
@@ -125,10 +112,11 @@ int main(int argc, char** argv) {
         float mc_price = h_pv[0] / N_PATHS;
         float mc_vega  = h_pv[1] / N_PATHS;
 
-        /* ── MC: pathwise delta ─────────────────────────────────────────── */
+        // ── MC: pathwise delta ─────────────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
-                                          + 2UL * (unsigned long)N_SAMPLES);
+                                          + 2UL * (unsigned long)N_SAMPLES,
+                                N_PATHS);  // fixed
         cudaDeviceSynchronize();
         cudaMemset(d_out1, 0, sizeof(float));
         simulate_swaption_delta<<<NB, NTPB>>>(d_out1, d_states, d_P0, d_f0,
@@ -141,10 +129,11 @@ int main(int argc, char** argv) {
         cudaMemcpy(&h_delta_mc, d_out1, sizeof(float), cudaMemcpyDeviceToHost);
         float mc_delta = h_delta_mc / N_PATHS;
 
-        /* ── MC: FD gamma ───────────────────────────────────────────────── */
+        // ── MC: FD gamma ───────────────────────────────────────────────────
         init_rng<<<NB, NTPB>>>(d_states,
                                 base_seed + (unsigned long)s
-                                          + 3UL * (unsigned long)N_SAMPLES);
+                                          + 3UL * (unsigned long)N_SAMPLES,
+                                N_PATHS);  // fixed
         cudaDeviceSynchronize();
         cudaMemset(d_out1, 0, sizeof(float));
         simulate_swaption_gamma<<<NB, NTPB>>>(d_out1, d_states, d_P0, d_f0,
@@ -158,7 +147,7 @@ int main(int argc, char** argv) {
         cudaMemcpy(&h_gamma_mc, d_out1, sizeof(float), cudaMemcpyDeviceToHost);
         float mc_gamma = h_gamma_mc / (N_PATHS * eps_r * eps_r);
 
-        /* ── Analytical ─────────────────────────────────────────────────── */
+        // ── Analytical ─────────────────────────────────────────────────────
         float an_price = analytical_swaption      (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
         float an_vega  = analytical_swaption_vega (T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);
         float an_volga = analytical_swaption_volga(T, tenor_dates, n_tenors, c, h_P, f0, a, sigma, r0);

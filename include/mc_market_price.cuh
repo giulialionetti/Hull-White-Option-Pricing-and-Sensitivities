@@ -3,12 +3,12 @@
 
 #include "mc_engine.cuh"
 
-
 __global__ void market_price(float* P0_sum,
                               curandState* states,
                               const float* d_drift,
                               HWParams p,
-                              float r0) {
+                              float r0,
+                              int n_paths) {
     int path_id = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float s_P[N_MAT];
@@ -16,11 +16,11 @@ __global__ void market_price(float* P0_sum,
         s_P[m] = 0.0f;
     __syncthreads();
 
-    if (path_id < N_PATHS) {
-        curandState local_state    = states[path_id];
-        float r                    = r0;
-        float discount_integral    = 0.0f;
-        int   maturity_index       = 0;
+    if (path_id < n_paths) {
+        curandState local_state = states[path_id];
+        float r                 = r0;
+        float discount_integral = 0.0f;
+        int   maturity_index    = 0;
 
         for (int i = 0; i < N_STEPS; i++) {
             float G = curand_normal(&local_state);
@@ -39,22 +39,46 @@ __global__ void market_price(float* P0_sum,
         atomicAdd(&P0_sum[m], s_P[m]);
 }
 
+// Launch only — returns immediately, no sync.
+inline void launch_market_price(float* d_P0_sum,
+                                 curandState* d_states,
+                                 const float* d_drift,
+                                 HWParams p,
+                                 float r0,
+                                 int n_paths,
+                                 int nb,
+                                 cudaStream_t stream) {
+    cudaMemsetAsync(d_P0_sum, 0, N_MAT * sizeof(float), stream);
+    market_price<<<nb, NTPB, 0, stream>>>(d_P0_sum, d_states, d_drift, p, r0, n_paths);
+}
+
+// Collect — async memcpy on stream then syncs only that stream.
+// Using cudaMemcpyAsync avoids the implicit full-device barrier
+// that cudaMemcpy (non-async) imposes across all streams.
+inline void collect_market_price(float* h_P,
+                                  const float* d_P0_sum,
+                                  int n_paths,
+                                  cudaStream_t stream) {
+    cudaMemcpyAsync(h_P, d_P0_sum, N_MAT * sizeof(float),
+                    cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    for (int i = 0; i < N_MAT; i++)
+        h_P[i] /= n_paths;
+}
+
+// Synchronous convenience wrapper for serial callers.
 inline void simulate_market_price(float* h_P,
                                    curandState* d_states,
                                    const float* d_drift,
                                    HWParams p,
-                                   float r0) {
+                                   float r0,
+                                   int n_paths,
+                                   int nb) {
     float* d_P0_sum;
     cudaMalloc(&d_P0_sum, N_MAT * sizeof(float));
-    cudaMemset(d_P0_sum, 0, N_MAT * sizeof(float));
-
-    market_price<<<NB, NTPB>>>(d_P0_sum, d_states, d_drift, p, r0);
+    launch_market_price(d_P0_sum, d_states, d_drift, p, r0, n_paths, nb, 0);
     cudaDeviceSynchronize();
-
-    cudaMemcpy(h_P, d_P0_sum, N_MAT * sizeof(float), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < N_MAT; i++)
-        h_P[i] /= N_PATHS;
-
+    collect_market_price(h_P, d_P0_sum, n_paths, 0);
     cudaFree(d_P0_sum);
 }
 

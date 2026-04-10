@@ -22,10 +22,10 @@ inline HWParams params(float a, float sigma) {
     return { a, sigma, dt, mean_reversion_factor, std_gaussian_shock };
 }
 
-
-__global__ void init_rng(curandState* states, unsigned long seed){
+// n_paths passed at runtime so each stream can use its own count
+__global__ void init_rng(curandState* states, unsigned long seed, int n_paths) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx < N_PATHS) curand_init(seed, idx, 0, &states[idx]);
+    if (idx < n_paths) curand_init(seed, idx, 0, &states[idx]);
 }
 
 __device__ inline void evolve_short_rate(float& r,

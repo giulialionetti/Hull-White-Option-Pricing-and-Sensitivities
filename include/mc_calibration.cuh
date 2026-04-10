@@ -3,90 +3,136 @@
 
 #include "mc_engine.cuh"
 
-inline void alloc_drift_tables(float** device_drift_table, float** device_sensitivity_drift_table) {
-    cudaMalloc(device_drift_table,      N_STEPS * sizeof(float));
-    cudaMalloc(device_sensitivity_drift_table, N_STEPS * sizeof(float));
+inline void alloc_drift_tables(float** d_drift, float** d_sens_drift) {
+    cudaMalloc(d_drift,      N_STEPS * sizeof(float));
+    cudaMalloc(d_sens_drift, N_STEPS * sizeof(float));
 }
 
-inline void free_drift_tables(float* device_drift_table, float* device_sensitivity_drift_table) {
-    cudaFree(device_drift_table);
-    cudaFree(device_sensitivity_drift_table);
+inline void free_drift_tables(float* d_drift, float* d_sens_drift) {
+    cudaFree(d_drift);
+    cudaFree(d_sens_drift);
 }
 
-inline void forward_rate(const float* log_P, float* f0){
+inline void forward_rate(const float* log_P, float* f0) {
     f0[0] = -(-3.0f*log_P[0] + 4.0f*log_P[1] - log_P[2]) / (2.0f * MAT_SPACING);
-    for(int i = 1; i < N_MAT - 1; i++)
+    for (int i = 1; i < N_MAT - 1; i++)
         f0[i] = -(log_P[i+1] - log_P[i-1]) / (2.0f * MAT_SPACING);
-    f0[N_MAT-1] = -(log_P[N_MAT-3] - 4.0f*log_P[N_MAT-2] + 3.0f*log_P[N_MAT-1]) / (2.0f * MAT_SPACING);
+    f0[N_MAT-1] = -(log_P[N_MAT-3] - 4.0f*log_P[N_MAT-2] + 3.0f*log_P[N_MAT-1])
+                  / (2.0f * MAT_SPACING);
 }
 
 inline void theta(const float* log_P, const float* f0,
-                           float* th, float a, float sigma){
-    for(int i = 1; i < N_MAT - 1; i++){
-        float t_i = i * MAT_SPACING;
-        float d2logP_dt2    = (log_P[i+1] - 2.0f*log_P[i] + log_P[i-1]) / (MAT_SPACING * MAT_SPACING);
-        float convexity = (sigma * sigma / (2.0f * a)) * (1.0f - expf(-2.0f * a * t_i ));
-        th[i]        = - d2logP_dt2 + a * f0[i] + convexity;
+                  float* th, float a, float sigma) {
+    for (int i = 1; i < N_MAT - 1; i++) {
+        float t_i        = i * MAT_SPACING;
+        float d2logP_dt2 = (log_P[i+1] - 2.0f*log_P[i] + log_P[i-1])
+                           / (MAT_SPACING * MAT_SPACING);
+        float convexity  = (sigma * sigma / (2.0f * a)) * (1.0f - expf(-2.0f * a * t_i));
+        th[i]            = -d2logP_dt2 + a * f0[i] + convexity;
     }
     th[0]       = th[1];
     th[N_MAT-1] = th[N_MAT-2];
 }
 
-inline void upload_drift(const float* th, float a, float sigma, float* device_drift_table,
-     float* device_sensitivity_drift_table){
-    float factor = (1.0f - expf(-a * host_dt)) / a;
-    float one_over_a_squared = 1.0f / (a * a);
-    float host_drift_table[N_STEPS];
-    float host_sensitivity_drift_table[N_STEPS];
+// ---------------------------------------------------------------------------
+// upload_drift: builds drift tables into caller-supplied pinned host buffers
+// then transfers async on stream. h_drift/h_sens_drift must be pinned
+// (cudaMallocHost). No sync — kernel enqueued on same stream follows in order.
+// ---------------------------------------------------------------------------
+inline void upload_drift(const float* th,
+                          float a, float sigma,
+                          float* d_drift, float* d_sens_drift,
+                          float* h_drift, float* h_sens_drift,
+                          cudaStream_t stream) {
+    const float dt            = T_FINAL / N_STEPS;
+    const float factor        = (1.0f - expf(-a * dt)) / a;
+    const float one_over_a_sq = 1.0f / (a * a);
 
-    float cosh_prev = 1.0f; // coshf(0) at s=0
-    
-    for(int i = 0; i < N_STEPS; i++){
-    float s_mid     = (i + 0.5f) * host_dt;
-    float t_idx     = s_mid / MAT_SPACING;
-    int   idx       = (int)t_idx;
-    float alpha     = t_idx - idx;
-    float theta_mid = (idx >= N_MAT - 1) ? th[N_MAT - 1] : (1.0f - alpha) * th[idx] + alpha * th[idx + 1];
+    float cosh_prev = 1.0f;
+    for (int i = 0; i < N_STEPS; i++) {
+        float s_mid     = (i + 0.5f) * dt;
+        float t_idx     = s_mid / MAT_SPACING;
+        int   idx       = (int)t_idx;
+        float alpha     = t_idx - idx;
+        float theta_mid = (idx >= N_MAT - 1)
+                          ? th[N_MAT - 1]
+                          : (1.0f - alpha) * th[idx] + alpha * th[idx + 1];
+        h_drift[i]      = theta_mid * factor;
 
-    host_drift_table[i] = theta_mid * factor;
+        float s_plus_dt = (i + 1) * dt;
+        float cosh_next = coshf(a * s_plus_dt);
+        h_sens_drift[i] = one_over_a_sq * 2.0f * sigma
+                          * expf(-a * s_mid) * (cosh_next - cosh_prev);
+        cosh_prev = cosh_next;
+    }
 
-    float s_plus_dt  = (i + 1) * host_dt;
-    float cosh_next  = coshf(a * s_plus_dt);
-
-    host_sensitivity_drift_table[i] = one_over_a_squared * 2.0f * sigma * expf(-a * s_mid) * (cosh_next - cosh_prev);
-
-    cosh_prev = cosh_next;
+    cudaMemcpyAsync(d_drift,      h_drift,      N_STEPS * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_sens_drift, h_sens_drift, N_STEPS * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
 }
 
-    cudaMemcpy(device_drift_table, host_drift_table,
-                       N_STEPS * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(device_sensitivity_drift_table, host_sensitivity_drift_table,
-                       N_STEPS * sizeof(float), cudaMemcpyHostToDevice);
-}
-
-inline void calibrate(const float* h_P, float* f0, float a, float sigma, 
-    float* device_drift_table, float* device_sensitivity_drift_table){
+// ---------------------------------------------------------------------------
+// Stream-aware versions: caller supplies pinned buffers + stream.
+// Used by generate_data_mgpu.cu — no internal alloc, no sync.
+// ---------------------------------------------------------------------------
+inline void calibrate(const float* h_P, float* f0,
+                      float a, float sigma,
+                      float* d_drift, float* d_sens_drift,
+                      float* h_drift, float* h_sens_drift,
+                      cudaStream_t stream) {
     float log_P[N_MAT];
-
-    for(int i = 0; i < N_MAT; i++)
+    for (int i = 0; i < N_MAT; i++)
         log_P[i] = logf(h_P[i]);
-
     forward_rate(log_P, f0);
-
     float th[N_MAT];
     theta(log_P, f0, th, a, sigma);
-
-    upload_drift(th, a, sigma, device_drift_table, device_sensitivity_drift_table);
+    upload_drift(th, a, sigma, d_drift, d_sens_drift, h_drift, h_sens_drift, stream);
 }
 
-inline void init_drift(float a, float sigma, float r0, float* device_drift_table, float* device_sensitivity_drift_table){
+inline void init_drift(float a, float sigma, float r0,
+                       float* d_drift, float* d_sens_drift,
+                       float* h_drift, float* h_sens_drift,
+                       cudaStream_t stream) {
     float th[N_MAT];
-    for(int i = 0; i < N_MAT; i++){
+    for (int i = 0; i < N_MAT; i++) {
         float t_i       = i * MAT_SPACING;
         float convexity = (sigma * sigma / (2.0f * a)) * (1.0f - expf(-2.0f * a * t_i));
         th[i]           = a * r0 + convexity;
     }
-    upload_drift(th, a, sigma, device_drift_table, device_sensitivity_drift_table);
+    upload_drift(th, a, sigma, d_drift, d_sens_drift, h_drift, h_sens_drift, stream);
+}
+
+// ---------------------------------------------------------------------------
+// Serial convenience versions: no pinned buffers or stream needed.
+// Used by generate_data.cu, test.cu, etc. — signature unchanged from original.
+// Allocates pinned staging internally, syncs, then frees.
+// ---------------------------------------------------------------------------
+inline void calibrate(const float* h_P, float* f0,
+                      float a, float sigma,
+                      float* d_drift, float* d_sens_drift) {
+    float* h_drift;
+    float* h_sens_drift;
+    cudaMallocHost(&h_drift,      N_STEPS * sizeof(float));
+    cudaMallocHost(&h_sens_drift, N_STEPS * sizeof(float));
+    calibrate(h_P, f0, a, sigma, d_drift, d_sens_drift,
+              h_drift, h_sens_drift, 0);
+    cudaDeviceSynchronize();
+    cudaFreeHost(h_drift);
+    cudaFreeHost(h_sens_drift);
+}
+
+inline void init_drift(float a, float sigma, float r0,
+                       float* d_drift, float* d_sens_drift) {
+    float* h_drift;
+    float* h_sens_drift;
+    cudaMallocHost(&h_drift,      N_STEPS * sizeof(float));
+    cudaMallocHost(&h_sens_drift, N_STEPS * sizeof(float));
+    init_drift(a, sigma, r0, d_drift, d_sens_drift,
+               h_drift, h_sens_drift, 0);
+    cudaDeviceSynchronize();
+    cudaFreeHost(h_drift);
+    cudaFreeHost(h_sens_drift);
 }
 
 #endif // MC_CALIBRATION_CUH
