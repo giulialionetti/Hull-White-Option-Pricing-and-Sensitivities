@@ -187,4 +187,167 @@ __host__ __device__ inline float analytical_swaption_gamma(float T, const float*
     return gamma;
 }
 
+__host__ __device__ inline float analytical_swaption_da(float T, const float* tenor_dates,
+                                                          int n_tenors, const float* c,
+                                                          const float* P0, const float* f0,
+                                                          float a, float sigma, float r0) {
+    float r_star = critical_rate_r_star(T, tenor_dates, n_tenors, c, P0, f0, a, sigma);
+    float f0T    = interpolate(f0, T);
+
+    // ── dr*/da via implicit differentiation of Σ cⱼ P(T,Tⱼ,r*,a) = 0 ────
+    // d/da [Σ cⱼ P_j] = 0
+    // Σ cⱼ (∂P_j/∂a|_{r*} + ∂P_j/∂r * dr*/da) = 0
+    // dr*/da = -[Σ cⱼ dP_j/da] / [Σ cⱼ dP_j/dr]
+    float num_dr = 0.0f, den_dr = 0.0f;
+    for (int j = 0; j < n_tenors; j++) {
+        float Tj      = tenor_dates[j];
+        float X_j     = P(P0, f0, T, Tj, r_star, a, sigma);
+        float B_j     = B(T, Tj, a);
+        float dB_j    = dB_da(T, Tj, a);
+        float dlnA_j  = dlnA_da(T, Tj, a, sigma, f0T, B_j, dB_j);
+        float dP_j_da = dP_da(X_j, r_star, dB_j, dlnA_j);
+        float dP_j_dr = -B_j * X_j;
+        num_dr += c[j] * dP_j_da;
+        den_dr += c[j] * dP_j_dr;
+    }
+    float dr_star_da = -num_dr / den_dr;
+
+    
+    float result = 0.0f;
+    for (int i = 0; i < n_tenors; i++) {
+        float Ti      = tenor_dates[i];
+        float X_i     = P(P0, f0, T, Ti, r_star, a, sigma);
+        float B_i     = B(T, Ti, a);
+        float dB_i    = dB_da(T, Ti, a);
+        float dlnA_i  = dlnA_da(T, Ti, a, sigma, f0T, B_i, dB_i);
+
+        // dX_i/da = ∂X_i/∂a|_{r*} + ∂X_i/∂r * dr*/da
+        float dXi_da_partial = dP_da(X_i, r_star, dB_i, dlnA_i);
+        float dXi_dr         = -B_i * X_i;
+        float dXi_da         = dXi_da_partial + dXi_dr * dr_star_da;
+
+        EuroOption o = euro_option(P0, f0, 0.0f, T, Ti, X_i, r0, a, sigma);
+
+        // dZBP_i/da total = ∂ZBP_i/∂a|_{X_i} + ∂ZBP_i/∂X_i * dX_i/da
+        // ∂ZBP_i/∂X_i = -P_0T * normcdf(-h + sigma_p)  (from ZBP formula)
+        float dZBPi_dXi   = -o.P_T * normcdff(-o.h + o.sigma_p);
+        float dZBPi_da    = dZBP_da(o, 0.0f, T, Ti, a, sigma, r0, P0, f0);
+
+        result += c[i] * (dZBPi_da + dZBPi_dXi * dXi_da);
+    }
+    return result;
+}
+
+__host__ __device__ inline float analytical_swaption_d2a(float T, const float* tenor_dates,
+                                                           int n_tenors, const float* c,
+                                                           const float* P0, const float* f0,
+                                                           float a, float sigma, float r0) {
+    float r_star = critical_rate_r_star(T, tenor_dates, n_tenors, c, P0, f0, a, sigma);
+    float f0T    = interpolate(f0, T);
+
+    // ── Pass 1: dr*/da ────────────────────────────────────────────────────
+    float num_dr = 0.0f, den_dr = 0.0f;
+    for (int j = 0; j < n_tenors; j++) {
+        float Tj     = tenor_dates[j];
+        float X_j    = P(P0, f0, T, Tj, r_star, a, sigma);
+        float B_j    = B(T, Tj, a);
+        float dB_j   = dB_da(T, Tj, a);
+        float dlnA_j = dlnA_da(T, Tj, a, sigma, f0T, B_j, dB_j);
+        num_dr += c[j] * dP_da(X_j, r_star, dB_j, dlnA_j);
+        den_dr += c[j] * (-B_j * X_j);
+    }
+    float dr_star_da = -num_dr / den_dr;
+
+    // ── Pass 2: d²r*/da² ─────────────────────────────────────────────────
+    float num_d2r = 0.0f;
+    for (int j = 0; j < n_tenors; j++) {
+        float Tj       = tenor_dates[j];
+        float X_j      = P(P0, f0, T, Tj, r_star, a, sigma);
+        float B_j      = B(T, Tj, a);
+        float dB_j     = dB_da(T, Tj, a);
+        float d2B_j    = d2B_da2(T, Tj, a);
+        float dlnA_j   = dlnA_da(T, Tj, a, sigma, f0T, B_j, dB_j);
+        float d2lnA_j  = d2lnA_da2(T, Tj, a, sigma, f0T, B_j, dB_j, d2B_j);
+        float dP_j_da  = dP_da(X_j, r_star, dB_j, dlnA_j);
+        float d2P_j_da2  = d2P_da2(X_j, r_star, dB_j, d2B_j, dlnA_j, d2lnA_j);
+        float d2P_j_dr2  = B_j * B_j * X_j;
+        float d2P_j_drda = -dB_j * X_j - B_j * dP_j_da;
+        num_d2r += c[j] * (d2P_j_da2
+                         + 2.0f * d2P_j_drda * dr_star_da
+                         + d2P_j_dr2 * dr_star_da * dr_star_da);
+    }
+    float d2r_star_da2 = -num_d2r / den_dr;
+
+    // ── Pass 3: sum over tenors ───────────────────────────────────────────
+    float f0_0 = interpolate(f0, 0.0f);
+    float result = 0.0f;
+
+    for (int i = 0; i < n_tenors; i++) {
+        float Ti       = tenor_dates[i];
+        float X_i      = P(P0, f0, T, Ti, r_star, a, sigma);
+        float B_i      = B(T, Ti, a);
+        float dB_i     = dB_da(T, Ti, a);
+        float d2B_i    = d2B_da2(T, Ti, a);
+        float dlnA_i   = dlnA_da(T, Ti, a, sigma, f0T, B_i, dB_i);
+        float d2lnA_i  = d2lnA_da2(T, Ti, a, sigma, f0T, B_i, dB_i, d2B_i);
+
+        float dP_i_da    = dP_da(X_i, r_star, dB_i, dlnA_i);
+        float d2P_i_da2  = d2P_da2(X_i, r_star, dB_i, d2B_i, dlnA_i, d2lnA_i);
+        float dP_i_dr    = -B_i * X_i;
+        float d2P_i_dr2  =  B_i * B_i * X_i;
+        float d2P_i_drda = -dB_i * X_i - B_i * dP_i_da;
+
+        float dXi_da   = dP_i_da + dP_i_dr * dr_star_da;
+        float d2Xi_da2 = d2P_i_da2
+                       + 2.0f * d2P_i_drda  * dr_star_da
+                       + dP_i_dr            * d2r_star_da2
+                       + d2P_i_dr2          * dr_star_da * dr_star_da;
+
+        EuroOption o = euro_option(P0, f0, 0.0f, T, Ti, X_i, r0, a, sigma);
+
+        float phi_h_sp = expf(-0.5f * (-o.h + o.sigma_p) * (-o.h + o.sigma_p))
+                       / sqrtf(2.0f * 3.14159265f);
+
+        // ∂ZBP/∂Xi = P_T * Φ(-h + σ_p)
+        float dZBPi_dXi  = o.P_T * normcdff(-o.h + o.sigma_p);
+
+        // ∂²ZBP/∂Xi² = P_T * φ(-h+σ_p) / (Xi * σ_p)
+        float d2ZBPi_dXi2 = o.P_T * phi_h_sp / (X_i * o.sigma_p);
+
+        // ∂²ZBP/(∂Xi∂a): differentiate ∂ZBP/∂Xi = P_T * Φ(-h+σ_p) w.r.t. a at fixed Xi
+        float B_0Ti    = B(0.0f, Ti, a);
+        float B_0T_    = B(0.0f, T,  a);
+        float dB_0Ti   = dB_da(0.0f, Ti, a);
+        float dB_0T_   = dB_da(0.0f, T,  a);
+        float dlnA_0Ti = dlnA_da(0.0f, Ti, a, sigma, f0_0, B_0Ti, dB_0Ti);
+        float dlnA_0T_ = dlnA_da(0.0f, T,  a, sigma, f0_0, B_0T_,  dB_0T_);
+        float dP_T_da  = dP_da(o.P_T, r0, dB_0T_, dlnA_0T_);
+
+        float dlnPS_da     = dlnA_0Ti - r0 * dB_0Ti;
+        float dlnPT_da     = dlnA_0T_ - r0 * dB_0T_;
+        float d_logPSPT_da = dlnPS_da - dlnPT_da;
+        float dsigmap      = dsigmap_da(0.0f, T, Ti, a, o.sigma_p, sigma);
+        float dh_sp_da     = -(1.0f / o.sigma_p) * d_logPSPT_da
+                            + (o.h / o.sigma_p) * dsigmap;
+
+        float d2ZBPi_dXi_da = dP_T_da * normcdff(-o.h + o.sigma_p)
+                             + o.P_T * phi_h_sp * dh_sp_da / X_i;
+
+        // ∂²ZBP/∂a²|_{Xi} via FD of dZBP_da at fixed Xi
+        float eps_a2 = 0.0001f;
+        EuroOption o_up   = euro_option(P0, f0, 0.0f, T, Ti, X_i, r0, a + eps_a2, sigma);
+        EuroOption o_down = euro_option(P0, f0, 0.0f, T, Ti, X_i, r0, a - eps_a2, sigma);
+        float d2ZBPi_da2_fixed_Xi =
+            (dZBP_da(o_up,   0.0f, T, Ti, a + eps_a2, sigma, r0, P0, f0)
+           - dZBP_da(o_down, 0.0f, T, Ti, a - eps_a2, sigma, r0, P0, f0))
+          / (2.0f * eps_a2);
+
+        result += c[i] * (d2ZBPi_da2_fixed_Xi
+                        + 2.0f * d2ZBPi_dXi_da * dXi_da
+                        + dZBPi_dXi            * d2Xi_da2
+                        + d2ZBPi_dXi2          * dXi_da * dXi_da);
+    }
+    return result;
+}
+
 #endif // SWAPTIONS_CUH
